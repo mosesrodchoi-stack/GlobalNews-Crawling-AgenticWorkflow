@@ -99,6 +99,9 @@ def main():
     # 5. Documentation-code synchronization (P1 drift prevention)
     results.extend(_check_doc_code_sync(project_dir))
 
+    # 6. Repeated error patterns in Knowledge Archive
+    results.append(_check_repeated_error_patterns(project_dir))
+
     # Write log file
     log_path = os.path.join(
         project_dir, ".claude", "hooks", "setup.maintenance.log"
@@ -283,6 +286,58 @@ def _check_script_syntax(scripts_dir, script_name):
             WARNING, "FAIL", f"Script: {script_name}",
             f"cannot read: {e}",
         )
+
+
+def _check_repeated_error_patterns(project_dir):
+    """Detect error types recurring across 3+ sessions in Knowledge Archive.
+
+    Informational report — suggests recording to MEMORY.md for persistent learning.
+    Does NOT modify any files. Read-only access to knowledge-index.jsonl.
+    """
+    ki_path = os.path.join(
+        project_dir, ".claude", "context-snapshots", "knowledge-index.jsonl"
+    )
+
+    if not os.path.exists(ki_path):
+        return _result(INFO, "PASS", "Error patterns", "no knowledge-index")
+
+    type_counts = {}
+    try:
+        with open(ki_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                # Count each error type ONCE per session (not per occurrence)
+                # D-7: Same counting semantics as extract_recurring_error_types() in _context_lib.py
+                seen_types = set()
+                for ep in entry.get("error_patterns", []):
+                    if isinstance(ep, dict):
+                        etype = ep.get("type", "unknown")
+                        if etype != "unknown" and etype not in seen_types:
+                            seen_types.add(etype)
+                            type_counts[etype] = type_counts.get(etype, 0) + 1
+    except Exception as e:
+        return _result(WARNING, "FAIL", "Error patterns", f"read error: {e}")
+
+    recurring = {k: v for k, v in type_counts.items() if v >= 3}
+    if recurring:
+        top = ", ".join(
+            f"{k}({v})" for k, v in sorted(
+                recurring.items(), key=lambda x: x[1], reverse=True
+            )[:5]
+        )
+        return _result(
+            INFO, "WARN", "Error patterns",
+            f"{len(recurring)} types recur 3+ times: {top}. "
+            f"Consider recording to MEMORY.md",
+        )
+
+    return _result(INFO, "PASS", "Error patterns", "no recurring patterns")
 
 
 def _check_doc_code_sync(project_dir):

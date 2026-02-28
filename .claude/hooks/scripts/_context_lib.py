@@ -2928,6 +2928,15 @@ def _classify_error_patterns(entries):
         ("command_not_found", re.compile(r"command not found|not recognized|is not recognized", re.I)),
     ]
 
+    # Read-only tools: is_error=True often indicates non-failure states (file too
+    # large, no results, agent timeout).  Only classify them as errors when the
+    # content matches a specific taxonomy pattern; otherwise skip silently to
+    # avoid inflating Predictive Debugging risk scores with false positives.
+    _READ_ONLY_TOOLS = frozenset({
+        "Read", "Glob", "Grep", "WebFetch", "WebSearch",
+        "Task", "TaskOutput", "ExitPlanMode", "AskUserQuestion",
+    })
+
     # A2: Build position map for resolution matching (file-aware, window-limited)
     entry_id_to_pos = {}
     for i, e in enumerate(entries):
@@ -2939,11 +2948,18 @@ def _classify_error_patterns(entries):
             continue
         content = tr.get("content", "")[:500]
         tid = tr.get("tool_use_id", "")
+        tool_name = id_to_tool.get(tid, "")
         error_type = "unknown"
         for etype, regex in ERROR_TAXONOMY:
             if regex.search(content):
                 error_type = etype
                 break
+
+        # Skip read-only tool results that match no taxonomy pattern — these are
+        # non-failure states (e.g., file too large, empty search results, agent
+        # timeout), not actionable errors.
+        if error_type == "unknown" and tool_name in _READ_ONLY_TOOLS:
+            continue
 
         # A2: Resolution matching — find successful follow-up within 5 entries
         resolution = None
@@ -3253,6 +3269,20 @@ def extract_session_facts(session_id, trigger, project_dir, entries, token_estim
     error_patterns = _classify_error_patterns(entries)
     if error_patterns:
         facts["error_patterns"] = error_patterns
+        # Tag enrichment: add error types to tags for RLM Grep precision
+        # e.g., Grep "tags.*timeout" knowledge-index.jsonl now matches error-typed sessions
+        tags_list = facts.setdefault("tags", [])
+        for ep in error_patterns:
+            if isinstance(ep, dict):
+                etype = ep.get("type", "unknown")
+                if etype != "unknown" and etype not in tags_list:
+                    tags_list.append(etype)
+
+    # 2.1. Tag enrichment: design_decisions presence marker
+    if high_signal:
+        tags_list = facts.setdefault("tags", [])
+        if "design" not in tags_list:
+            tags_list.append("design")
 
     # 2.5. Success patterns — Edit/Write→Bash success sequences for cross-session learning
     success_patterns = _extract_success_patterns(entries)
@@ -3363,28 +3393,238 @@ def replace_or_append_session_facts(ki_path, facts):
             pass
 
 
-def cleanup_knowledge_index(snapshot_dir):
-    """Rotate knowledge-index.jsonl to keep MAX_KNOWLEDGE_INDEX_ENTRIES entries.
+def _importance_tier(entry):
+    """Assign importance tier (0-3) to a knowledge-index entry.
 
-    Deterministic: keeps the most recent N entries, removes oldest.
+    Deterministic: pure pattern matching on JSON keys.
+    No semantic inference — presence/absence of fields only.
+
+    Tier 3 (high-value): design_decisions, error_patterns with resolution,
+                         diagnosis_patterns — cross-session learning assets.
+    Tier 2 (medium):     team_summaries, ulw_active, pacs_min —
+                         workflow coordination context.
+    Tier 1 (has edits):  modified_files — session had code changes.
+    Tier 0 (trivial):    read-only or empty sessions, malformed entries.
+
+    Args:
+        entry: parsed JSON dict from knowledge-index.jsonl, or any value
+               (malformed entries receive Tier 0 gracefully).
+    Returns:
+        int: 0, 1, 2, or 3.
+    """
+    if not isinstance(entry, dict):
+        return 0
+
+    # Tier 3: high-signal cross-session learning assets
+    if entry.get("design_decisions"):
+        return 3
+    if entry.get("diagnosis_patterns"):
+        return 3
+    error_patterns = entry.get("error_patterns")
+    if isinstance(error_patterns, list):
+        for ep in error_patterns:
+            if isinstance(ep, dict) and ep.get("resolution"):
+                return 3
+
+    # Tier 2: workflow coordination context
+    if entry.get("team_summaries"):
+        return 2
+    if entry.get("ulw_active"):
+        return 2
+    if entry.get("pacs_min") is not None:
+        return 2
+
+    # Tier 1: session had code changes
+    if entry.get("modified_files"):
+        return 1
+
+    # Tier 0: trivial (read-only, empty, or unrecognized)
+    return 0
+
+
+def validate_retention_result(kept_lines, original_count):
+    """P1 Retention Validation (RI1, RI2, RI4, RI5, RI6).
+
+    Validates post-rotation invariants BEFORE writing to disk.
+    Called by cleanup_knowledge_index() after selection, before atomic_write().
+
+    Pattern: Same as aggregate_risk_scores() -> validate_risk_scores(RS1-RS6).
+    Fail-safe: If validation fails, caller falls back to FIFO (current behavior).
+
+    Returns: list of warning strings (empty = all checks pass).
+    """
+    warnings = []
+
+    # RI1: Non-empty result (rotation must never delete everything)
+    if not kept_lines:
+        warnings.append("RI1 FAIL: retained 0 entries after rotation")
+        return warnings  # Fatal — remaining checks meaningless
+
+    # RI2: Count within budget
+    if len(kept_lines) > MAX_KNOWLEDGE_INDEX_ENTRIES:
+        warnings.append(
+            f"RI2 FAIL: {len(kept_lines)} > MAX {MAX_KNOWLEDGE_INDEX_ENTRIES}"
+        )
+
+    # RI4: Chronological order preserved (date-level, YYYY-MM-DD)
+    # Consumers (_get_recent_sessions) depend on last-N-lines being most recent.
+    # Date-level tolerance: same-day timestamp reordering is harmless (concurrent
+    # sessions or sessionend delays create natural within-day jitter). Cross-day
+    # reversal indicates a real ordering bug.
+    prev_date = ""
+    for i, line in enumerate(kept_lines):
+        try:
+            entry = json.loads(line.strip())
+            ts = entry.get("timestamp", "")
+            date = ts[:10] if len(ts) >= 10 else ""
+            if date and prev_date and date < prev_date:
+                warnings.append(
+                    f"RI4 FAIL: date order violated at line {i}: "
+                    f"{prev_date} > {date}"
+                )
+                break  # One violation is sufficient evidence
+            if date:
+                prev_date = date
+        except (json.JSONDecodeError, TypeError):
+            continue  # Malformed lines don't affect order check
+
+    # RI5: No duplicate session_ids (dedup integrity)
+    session_ids = []
+    for line in kept_lines:
+        try:
+            entry = json.loads(line.strip())
+            sid = entry.get("session_id", "")
+            if sid:
+                session_ids.append(sid)
+        except (json.JSONDecodeError, TypeError):
+            continue
+    if len(session_ids) != len(set(session_ids)):
+        dup_count = len(session_ids) - len(set(session_ids))
+        warnings.append(f"RI5 FAIL: {dup_count} duplicate session_id(s)")
+
+    # RI6: Exact budget fill — if input exceeded MAX, output must be exactly MAX
+    if original_count > MAX_KNOWLEDGE_INDEX_ENTRIES:
+        if len(kept_lines) != MAX_KNOWLEDGE_INDEX_ENTRIES:
+            warnings.append(
+                f"RI6 FAIL: expected exactly {MAX_KNOWLEDGE_INDEX_ENTRIES} "
+                f"entries, got {len(kept_lines)} (original: {original_count})"
+            )
+
+    return warnings
+
+
+def cleanup_knowledge_index(snapshot_dir):
+    """Rotate knowledge-index.jsonl with importance-based retention.
+
+    3-step algorithm:
+      1. Parse + Score: assign importance tier (0-3) to each entry
+      2. Select: keep top MAX entries by (tier DESC, original_position ASC)
+      3. Re-sort: restore chronological order (original file position)
+
+    P1 Compliance: All operations are deterministic (JSON parse, integer
+    comparison, positional sort). No semantic inference.
+    Fail-safe: If validate_retention_result() detects invariant violation,
+    falls back to FIFO (current behavior) — regression impossible.
+
+    Consumers depending on chronological order:
+      - restore_context.py: _get_recent_sessions(ki_path, n=3) reads last N lines
+      - aggregate_risk_scores(): reads all entries (order-independent)
+      - Claude Grep queries: pattern-based (order-independent)
     """
     ki_path = os.path.join(snapshot_dir, "knowledge-index.jsonl")
     if not os.path.exists(ki_path):
         return
 
     try:
-        lines = []
+        all_lines = []
         with open(ki_path, "r", encoding="utf-8") as f:
-            lines = [line for line in f if line.strip()]
+            all_lines = [line for line in f if line.strip()]
 
-        if len(lines) <= MAX_KNOWLEDGE_INDEX_ENTRIES:
+        if len(all_lines) <= MAX_KNOWLEDGE_INDEX_ENTRIES:
             return
 
-        # Keep only the most recent entries
-        trimmed = lines[-MAX_KNOWLEDGE_INDEX_ENTRIES:]
-        atomic_write(ki_path, "".join(trimmed))
+        # Step 1: Parse + Score — assign (tier, original_position) to each line
+        scored = []
+        for pos, line in enumerate(all_lines):
+            try:
+                entry = json.loads(line.strip())
+                tier = _importance_tier(entry)
+            except (json.JSONDecodeError, TypeError):
+                # Malformed JSON: Tier 0, preserve original line
+                tier = 0
+            scored.append((tier, pos, line))
+
+        # Step 2: Select top MAX by (tier DESC, position DESC)
+        # Higher tier survives; within same tier, newer entries survive
+        scored.sort(key=lambda x: (-x[0], -x[1]))
+        selected = scored[:MAX_KNOWLEDGE_INDEX_ENTRIES]
+
+        # Step 3: Re-sort by original position (restore chronological order)
+        selected.sort(key=lambda x: x[1])
+
+        kept_lines = [item[2] for item in selected]
+
+        # P1 Validation: check invariants before writing
+        validation_warnings = validate_retention_result(
+            kept_lines, len(all_lines)
+        )
+
+        if validation_warnings:
+            # Log warnings for debugging
+            for w in validation_warnings:
+                print(f"retention-validation: {w}", file=sys.stderr)
+            # Fail-safe: revert to FIFO (current behavior, zero regression)
+            kept_lines = all_lines[-MAX_KNOWLEDGE_INDEX_ENTRIES:]
+
+        atomic_write(ki_path, "".join(kept_lines))
     except Exception:
         pass
+
+
+def extract_recurring_error_types(ki_path, min_count=3, max_results=5):
+    """P1 Consumer: Extract error types recurring across multiple sessions.
+
+    Deterministic: JSON parsing + counting only. No LLM judgment.
+    Completes the P1 chain: error_patterns (Producer) → this function (Consumer).
+    D-7: Same counting semantics as _check_repeated_error_patterns() in setup_maintenance.py
+
+    Args:
+        ki_path: Path to knowledge-index.jsonl
+        min_count: Minimum session count to qualify as "recurring" (default: 3)
+        max_results: Maximum types to return (default: 5)
+
+    Returns:
+        list of (error_type, session_count) tuples, sorted by count descending.
+        Empty list if no recurring patterns or file not found.
+    """
+    if not os.path.exists(ki_path):
+        return []
+
+    type_counts = {}
+    try:
+        with open(ki_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                # Count each error type ONCE per session (not per occurrence)
+                seen_types = set()
+                for ep in entry.get("error_patterns", []):
+                    if isinstance(ep, dict):
+                        etype = ep.get("type", "unknown")
+                        if etype != "unknown" and etype not in seen_types:
+                            seen_types.add(etype)
+                            type_counts[etype] = type_counts.get(etype, 0) + 1
+    except (OSError, IOError):
+        return []
+
+    recurring = [(k, v) for k, v in type_counts.items() if v >= min_count]
+    recurring.sort(key=lambda x: x[1], reverse=True)
+    return recurring[:max_results]
 
 
 def cleanup_session_archives(snapshot_dir):

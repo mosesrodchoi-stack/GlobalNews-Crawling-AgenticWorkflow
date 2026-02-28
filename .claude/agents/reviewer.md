@@ -82,6 +82,7 @@ Examine the artifact through these lenses:
 - Correct implementations (no off-by-one, edge cases, etc.)?
 - Security considerations addressed?
 - Error handling appropriate?
+- Changes consistent with existing codebase patterns, suggesting developer analyzed existing code before modifying? (CAP-1)
 - Change scope surgical — no unrelated modifications or "improvements" to untouched code? (CAP-4)
 - No speculative abstractions or premature generalization — minimum code for the requirement? (CAP-2)
 

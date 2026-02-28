@@ -5,11 +5,15 @@
 | 항목 | 내용 |
 |------|------|
 | **시스템 유형** | Staged Monolith — Python 3.12 |
-| **부모 프레임워크** | [AgenticWorkflow](AGENTICWORKFLOW-ARCHITECTURE-AND-PHILOSOPHY.md) (DNA 유전) |
+| **부모 프레임워크** | [AgenticWorkflow](AGENTICWORKFLOW-ARCHITECTURE-AND-PHILOSOPHY.md) (만능줄기세포 — DNA 유전) |
 | **산출물** | Parquet (ZSTD) + SQLite (FTS5/vec) + Streamlit 대시보드 |
 | **실행 환경** | MacBook M2 Pro, 48GB RAM, Claude API $0 |
-| **상태** | 완성 (Production-Ready) — 20/20 단계 완료 |
+| **상태** | Production-Ready — 20/20 단계 완료 |
 | **코드 규모** | 91개 Python 모듈, ~41,500 LOC (src) + ~18,400 LOC (tests) |
+
+> **부모-자식 관계**: 이 프로젝트는 AgenticWorkflow 프레임워크(만능줄기세포)로부터 태어난 **자식 시스템**이다.
+> 부모 문서(AGENTICWORKFLOW-*.md)는 방법론·프레임워크를, 자식 문서(GLOBALNEWS-*.md)는 **도메인 고유 시스템**을 기술한다.
+> 이 분리는 자식 시스템이 독립적으로 이해·운영될 수 있게 한다.
 
 ---
 
@@ -245,7 +249,19 @@ Tier 6: Claude Code 인터랙티브 분석으로 에스컬레이션
 | L2 | Short-term | 1-4주 | 단기 트렌드 |
 | L3 | Mid-term | 1-6개월 | 중기 변동 |
 | L4 | Long-term | 6개월+ | 장기 전환 |
-| L5 | Singularity | 12개월+ | 패러다임 전환, 3개 독립 경로 |
+| L5 | Singularity | 12개월+ | 패러다임 전환, 3개 독립 경로 중 2개 합의 필요 |
+
+---
+
+## 하드 제약 조건
+
+| # | 제약 | 설명 |
+|---|------|------|
+| C1 | Claude API = $0 | 모든 분석은 로컬 Python 라이브러리만 사용. Claude Code 구독은 오케스트레이션만 |
+| C2 | Conductor Pattern | Claude Code가 Python 스크립트 생성 → Bash 실행 → 결과 읽기 → 결정 |
+| C3 | 단일 머신 | MacBook M2 Pro에서 전체 파이프라인 실행. 클라우드 GPU 없음 |
+| C4 | Parquet/SQLite | 구조화된 데이터 출력. 보고서나 시각화가 아닌 데이터 |
+| C5 | 합법 크롤링 | robots.txt 준수, 속도 제한 적용, 개인정보 미수집 |
 
 ---
 
@@ -282,18 +298,6 @@ df.groupby('topic_label')['sentiment_score'].mean().sort_values()
 
 ---
 
-## 하드 제약 조건
-
-| # | 제약 | 설명 |
-|---|------|------|
-| C1 | Claude API = $0 | 모든 분석은 로컬 Python 라이브러리만 사용. Claude Code 구독은 오케스트레이션만 |
-| C2 | Conductor Pattern | Claude Code가 Python 스크립트 생성 → Bash 실행 → 결과 읽기 → 결정 |
-| C3 | 단일 머신 | MacBook M2 Pro에서 전체 파이프라인 실행. 클라우드 GPU 없음 |
-| C4 | Parquet/SQLite | 구조화된 데이터 출력. 보고서나 시각화가 아닌 데이터 |
-| C5 | 합법 크롤링 | robots.txt 준수, 속도 제한 적용, 개인정보 미수집 |
-
----
-
 ## 테스트
 
 ```bash
@@ -316,24 +320,26 @@ pytest -m "not slow"     # 느린 NLP 모델 테스트 제외
 | DNA 구성요소 | 유전 형태 |
 |-------------|----------|
 | 3단계 구조 | Research (4단계) → Planning (4단계) → Implementation (12단계) |
-| SOT 패턴 | `.claude/state.yaml` — 단일 상태 파일 |
+| SOT 패턴 | `.claude/state.yaml` — 단일 상태 파일, Orchestrator만 쓰기 |
 | 4계층 QA | L0 Anti-Skip → L1 Verification → L1.5 pACS → L2 Adversarial Review |
-| P1 할루시네이션 봉쇄 | 결정론적 검증 스크립트 (`validate_*.py`) |
+| P1 할루시네이션 봉쇄 | 13개 결정론적 검증 스크립트 (`validate_*.py`) |
 | P2 전문가 위임 | 32개 전문 서브에이전트 |
 | Safety Hooks | 위험 명령 차단, TDD 보호, 예측적 디버깅 |
 | Context Preservation | 스냅샷 + Knowledge Archive + RLM 복원 |
 
+**도메인 고유 변이**: 4-Level 재시도 (90회), 44-site Adapter Pattern, 5-Layer Signal Hierarchy, Date-Partitioned Storage, Conductor Pattern
+
 ---
 
-## 관련 문서
+## 문서 가이드
 
-| 문서 | 내용 |
-|------|------|
-| [GLOBALNEWS-ARCHITECTURE.md](GLOBALNEWS-ARCHITECTURE.md) | 시스템 아키텍처 심층 분석 |
-| [GLOBALNEWS-USER-MANUAL.md](GLOBALNEWS-USER-MANUAL.md) | 일상 운영 가이드 |
-| [prompt/workflow.md](prompt/workflow.md) | 워크플로우 정의 (20단계) |
-| [coding-resource/PRD.md](coding-resource/PRD.md) | 원본 요구사항 정의서 |
-| [AGENTICWORKFLOW-ARCHITECTURE-AND-PHILOSOPHY.md](AGENTICWORKFLOW-ARCHITECTURE-AND-PHILOSOPHY.md) | 부모 프레임워크 아키텍처 |
+| 문서 | 내용 | 대상 |
+|------|------|------|
+| **[GLOBALNEWS-README.md](GLOBALNEWS-README.md)** (이 문서) | 시스템 개요, 빠른 시작, 실행 결과 | 처음 접하는 사용자 |
+| [GLOBALNEWS-ARCHITECTURE-AND-PHILOSOPHY.md](GLOBALNEWS-ARCHITECTURE-AND-PHILOSOPHY.md) | 설계 철학, 아키텍처 심층 분석, 선택의 근거 | 시스템을 깊이 이해하려는 개발자 |
+| [GLOBALNEWS-USER-MANUAL.md](GLOBALNEWS-USER-MANUAL.md) | 일상 운영 가이드, CLI, 대시보드, 자동화 | 시스템을 운영하는 연구자 |
+| [prompt/workflow.md](prompt/workflow.md) | 워크플로우 정의 (20단계 구축 설계도) | 구축 과정을 이해하려는 사람 |
+| [AGENTICWORKFLOW-ARCHITECTURE-AND-PHILOSOPHY.md](AGENTICWORKFLOW-ARCHITECTURE-AND-PHILOSOPHY.md) | 부모 프레임워크 아키텍처 | 프레임워크 자체에 관심 있는 사람 |
 
 ---
 

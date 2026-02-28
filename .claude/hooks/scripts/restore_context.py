@@ -34,7 +34,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _context_lib import (
     read_stdin_json, get_snapshot_dir, read_autopilot_state,
     validate_step_output, validate_sot_schema, sot_paths,
-    extract_path_tags, aggregate_risk_scores, atomic_write,
+    extract_path_tags, extract_recurring_error_types,
+    aggregate_risk_scores, atomic_write,
 )
 
 
@@ -363,7 +364,22 @@ def _build_recovery_output(source, latest_path, summary, sot_warning, snapshot_a
             for s in recent:
                 ts = s.get("timestamp", "")[:10]
                 task = s.get("user_task", "(기록 없음)")[:80]
-                output_lines.append(f"  - [{ts}] {task}")
+                # P1: Deterministic completion_summary extraction for immediate context
+                cs = s.get("completion_summary", {})
+                status = s.get("final_status", "")
+                edit_ok = cs.get("edit_success", 0)
+                bash_ok = cs.get("bash_success", 0)
+                bash_fail = cs.get("bash_fail", 0)
+                stat_parts = []
+                if edit_ok:
+                    stat_parts.append(f"Edit:{edit_ok}\u2713")
+                if bash_ok or bash_fail:
+                    bash_str = f"Bash:{bash_ok}\u2713"
+                    if bash_fail:
+                        bash_str += f"/{bash_fail}\u2717"
+                    stat_parts.append(bash_str)
+                stat_suffix = f" ({', '.join(stat_parts)})" if stat_parts else ""
+                output_lines.append(f"  - [{ts}] {task}{stat_suffix}")
             # CM-4: RLM query examples — activate programmatic probing
             output_lines.append("  RLM 쿼리 예시 (Grep tool 사용):")
             output_lines.append(f'  - Grep "design_decisions" {ki_path} → 설계 결정 포함 세션')
@@ -379,6 +395,11 @@ def _build_recovery_output(source, latest_path, summary, sot_warning, snapshot_a
                     output_lines.append(f'  - Grep "tags.*{tag}" {ki_path} → {tag} 관련 세션')
             if error_info:
                 output_lines.append(f'  - Grep "resolution" {ki_path} → 에러→해결 패턴 포함 세션')
+            # C3: Error-type tag query hints (convenience — LLM-driven Grep, not P1)
+            recurring_types = extract_recurring_error_types(ki_path)
+            if recurring_types:
+                for etype, _count in recurring_types[:2]:
+                    output_lines.append(f'  - Grep "tags.*{etype}" {ki_path} → {etype} 에러 타입 세션')
 
             # P1-1: Proactive Error→Resolution surfacing
             # Surface recent error patterns + resolutions directly (no manual Grep)
@@ -388,6 +409,15 @@ def _build_recovery_output(source, latest_path, summary, sot_warning, snapshot_a
                 output_lines.append("■ 최근 에러→해결 패턴 (자동 표면화):")
                 for er in error_resolutions[:3]:
                     output_lines.append(f"  - {er}")
+
+            # P1-3: Proactive recurring error type surfacing (P1-complete Consumer)
+            # Auto-surfaces error types recurring across 3+ sessions
+            # Completes P1 chain: error_patterns (Producer) → extract_recurring_error_types (Consumer)
+            if recurring_types:
+                output_lines.append("")
+                output_lines.append("■ 반복 에러 타입 (자동 표면화 — P1):")
+                for etype, count in recurring_types:
+                    output_lines.append(f"  - {etype}: {count}개 세션에서 반복")
 
             # P1-2: Proactive Diagnosis Pattern surfacing
             # Surface recent diagnosis patterns for cross-session learning

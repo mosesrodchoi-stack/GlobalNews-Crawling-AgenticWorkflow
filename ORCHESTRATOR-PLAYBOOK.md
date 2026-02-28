@@ -459,6 +459,8 @@ python3 scripts/sot_manager.py --advance-step 8 --project-dir .
 
 ## Implementation Phase (Steps 9–20)
 
+> **CAP Reminder**: All coding agents in this phase internalize Coding Anchor Points — read before modify (CAP-1), minimum code (CAP-2), define success criteria first (CAP-3), touch only what's needed (CAP-4). Details: AGENTS.md §2.
+
 ### Step 9: Project Infrastructure Scaffolding
 
 | Item | Value |

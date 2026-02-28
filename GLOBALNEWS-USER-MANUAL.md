@@ -748,7 +748,7 @@ Claude Code 내에서 `/run` 또는 시작 트리거를 입력하면:
 | 문서 | 내용 |
 |------|------|
 | [`GLOBALNEWS-README.md`](GLOBALNEWS-README.md) | 시스템 개요, 빠른 시작, 실행 결과 |
-| [`GLOBALNEWS-ARCHITECTURE.md`](GLOBALNEWS-ARCHITECTURE.md) | 4-Layer 아키텍처, 데이터 흐름, Parquet 스키마 |
+| [`GLOBALNEWS-ARCHITECTURE-AND-PHILOSOPHY.md`](GLOBALNEWS-ARCHITECTURE-AND-PHILOSOPHY.md) | 설계 철학, 4-Layer 아키텍처, 선택의 근거 |
 | [`prompt/workflow.md`](prompt/workflow.md) | 20-step 워크플로우 설계도 (구축 과정 기록) |
 | [`config/sources.yaml`](config/sources.yaml) | 44개 사이트 설정 (URL, 선택자, 제한) |
 | [`config/pipeline.yaml`](config/pipeline.yaml) | 8-Stage 분석 파이프라인 설정 |
