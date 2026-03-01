@@ -37,6 +37,18 @@ python3 scripts/sot_manager.py --update-team '{"name":"team-x","status":"partial
 # Set workflow status (e.g., mark completed after Step 20)
 python3 scripts/sot_manager.py --set-status completed --project-dir .
 
+# Autopilot: enable/disable
+python3 scripts/sot_manager.py --set-autopilot true --project-dir .
+
+# Autopilot: record auto-approved human step (must be 4/8/18)
+python3 scripts/sot_manager.py --add-auto-approved 8 --project-dir .
+
+# Autopilot: P1 decision log validation (DL1-DL6, after creating decision log)
+python3 .claude/hooks/scripts/validate_decision_log.py --step 8 --project-dir .
+
+# Quality gates — auto-detects autopilot from SOT, runs HQ1/HQ2/HQ3 if enabled
+python3 scripts/run_quality_gates.py --step 8 --project-dir .
+
 # Extract step-specific guide (focused context for agents — avoids loading full playbook)
 python3 scripts/extract_orchestrator_step_guide.py --step 12 --project-dir .
 python3 scripts/extract_orchestrator_step_guide.py --step 12 --project-dir . --include-universal --include-failure-recovery
@@ -277,7 +289,16 @@ python3 scripts/sot_manager.py --read --project-dir .
 # 4. Record decision
 python3 scripts/sot_manager.py --record-output 4 autopilot-logs/step-4-decision.md --project-dir .
 
-# 5. Validate + Advance
+# 5. Autopilot only: P1 decision log validation (DL1-DL6)
+python3 .claude/hooks/scripts/validate_decision_log.py --step 4 --project-dir .
+
+# 6. Autopilot only: record auto-approval
+python3 scripts/sot_manager.py --add-auto-approved 4 --project-dir .
+
+# 7. Quality gates — auto-detects autopilot from SOT, runs HQ1/HQ2/HQ3 if enabled
+python3 scripts/run_quality_gates.py --step 4 --project-dir .
+
+# 8. Validate (ST7 checks decision log exists when autopilot active) + Advance
 python3 scripts/validate_step_transition.py --step 4 --project-dir .
 python3 scripts/sot_manager.py --advance-step 4 --project-dir .
 ```
@@ -449,8 +470,19 @@ python3 scripts/sot_manager.py --read --project-dir .
 
 # 3. Options: proceed / rework [step] / modify
 
-# 4. Record + Validate + Advance
+# 4. Record decision
 python3 scripts/sot_manager.py --record-output 8 autopilot-logs/step-8-decision.md --project-dir .
+
+# 5. Autopilot only: P1 decision log validation (DL1-DL6)
+python3 .claude/hooks/scripts/validate_decision_log.py --step 8 --project-dir .
+
+# 6. Autopilot only: record auto-approval
+python3 scripts/sot_manager.py --add-auto-approved 8 --project-dir .
+
+# 7. Quality gates — auto-detects autopilot from SOT, runs HQ1/HQ2/HQ3 if enabled
+python3 scripts/run_quality_gates.py --step 8 --project-dir .
+
+# 8. Validate (ST7 checks decision log exists when autopilot active) + Advance
 python3 scripts/validate_step_transition.py --step 8 --project-dir .
 python3 scripts/sot_manager.py --advance-step 8 --project-dir .
 ```
@@ -869,8 +901,19 @@ python3 scripts/sot_manager.py --read --project-dir .
 
 # 3. Options: deploy / rework [step] / retest
 
-# 4. Record + Validate + Advance
+# 4. Record decision
 python3 scripts/sot_manager.py --record-output 18 autopilot-logs/step-18-decision.md --project-dir .
+
+# 5. Autopilot only: P1 decision log validation (DL1-DL6)
+python3 .claude/hooks/scripts/validate_decision_log.py --step 18 --project-dir .
+
+# 6. Autopilot only: record auto-approval
+python3 scripts/sot_manager.py --add-auto-approved 18 --project-dir .
+
+# 7. Quality gates — auto-detects autopilot from SOT, runs HQ1/HQ2/HQ3 if enabled
+python3 scripts/run_quality_gates.py --step 18 --project-dir .
+
+# 8. Validate (ST7 checks decision log exists when autopilot active) + Advance
 python3 scripts/validate_step_transition.py --step 18 --project-dir .
 python3 scripts/sot_manager.py --advance-step 18 --project-dir .
 ```
@@ -988,6 +1031,17 @@ L2 FAIL (Review FAIL verdict)
   → python3 .claude/hooks/scripts/validate_retry_budget.py --step N --gate review --project-dir . --check-and-increment
   → can_retry: true → Abductive Diagnosis → address issues → re-review
   → can_retry: false → escalate to user
+
+HQ FAIL (Human step quality gates — autopilot mode only)
+  HQ1: Decision log missing/too small (< 100 bytes)
+    → Create/expand autopilot-logs/step-N-decision.md
+    → Validate with: python3 .claude/hooks/scripts/validate_decision_log.py --step N --project-dir .
+  HQ2: Step not in auto_approved_steps
+    → python3 scripts/sot_manager.py --add-auto-approved N --project-dir .
+  HQ3: Previous step output missing/too small
+    → Re-run previous step, ensure output is recorded in SOT
+  ST7: validate_step_transition blocks when autopilot active + decision log missing
+    → Create autopilot-logs/step-N-decision.md before transition
 ```
 
 ### Abductive Diagnosis Protocol

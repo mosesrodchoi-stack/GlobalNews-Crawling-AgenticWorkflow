@@ -99,6 +99,11 @@ SOT_CAPTURE_CHARS = 3000
 # Anti-Skip Guard minimum output size (bytes)
 MIN_OUTPUT_SIZE = 100
 
+# D-7 intentional duplication — must match sot_manager.py:HUMAN_STEPS,
+# run_quality_gates.py:HUMAN_STEPS, validate_step_transition.py:HUMAN_STEPS,
+# and prompt/workflow.md "Steps 4, 8, 18"
+HUMAN_STEPS_SET = frozenset({4, 8, 18})
+
 # --- SOT file paths (single definition — 절대 기준 2) ---
 SOT_FILENAMES = ("state.yaml", "state.yml", "state.json")
 
@@ -682,7 +687,7 @@ def validate_sot_schema(ap_state):
                 f"SOT schema: unrecognized workflow_status '{status}'"
             )
 
-    # S6: auto_approved_steps — items must be int, within plausible range
+    # S6: auto_approved_steps — items must be int, within HUMAN_STEPS_SET, not future
     approved = ap_state.get("auto_approved_steps", [])
     if isinstance(approved, list):
         for item in approved:
@@ -690,11 +695,26 @@ def validate_sot_schema(ap_state):
                 warnings.append(
                     f"SOT schema: auto_approved_steps contains non-int: {item}"
                 )
+            elif item not in HUMAN_STEPS_SET:
+                warnings.append(
+                    f"SOT schema: auto_approved_steps contains non-human step "
+                    f"{item} (valid: {sorted(HUMAN_STEPS_SET)})"
+                )
             elif isinstance(cs, int) and item > cs:
                 warnings.append(
                     f"SOT schema: auto_approved_steps contains future step "
                     f"{item} (current_step={cs})"
                 )
+
+    # S6b: autopilot.enabled — must be bool (if present in ap_state)
+    # Note: read_autopilot_state() hardcodes enabled=True, so S6b is
+    # unreachable via that path. Retained as defensive guard for direct
+    # callers (e.g., tests) passing raw SOT dicts.
+    ap_enabled = ap_state.get("enabled")
+    if ap_enabled is not None and not isinstance(ap_enabled, bool):
+        warnings.append(
+            f"SOT schema: autopilot.enabled is {type(ap_enabled).__name__}, expected bool"
+        )
 
     # S7: pacs — must be dict with valid structure (if present)
     pacs = ap_state.get("pacs")
@@ -842,6 +862,146 @@ def validate_sot_schema(ap_state):
                             )
 
     return warnings
+
+
+# =============================================================================
+# Decision Log P1 Validation (DL1-DL6)
+# =============================================================================
+
+# Compiled regex patterns for decision log validation (module-level, 1x per process)
+_DL_STEP_RE = re.compile(r'\*\*Step\*\*\s*:\s*(\d+)', re.IGNORECASE)
+_DL_CHECKPOINT_RE = re.compile(r'\*\*Checkpoint\s+Type\*\*\s*:', re.IGNORECASE)
+_DL_DECISION_RE = re.compile(r'\*\*Decision\*\*\s*:\s*(.+)', re.IGNORECASE)
+_DL_RATIONALE_RE = re.compile(r'\*\*Rationale\*\*\s*:\s*(.+)', re.IGNORECASE)
+_DL_TIMESTAMP_RE = re.compile(r'\*\*Timestamp\*\*\s*:', re.IGNORECASE)
+
+# Minimum size for a meaningful decision log (bytes)
+_DL_MIN_SIZE = 100
+
+
+def validate_decision_log(project_dir, step_num, current_step=None):
+    """Decision Log P1 Validation — structural integrity of autopilot decision logs.
+
+    P1 Compliance: All checks are deterministic (file I/O, regex, comparison).
+    SOT Compliance: Read-only — reads decision log file and optional SOT step.
+
+    Checks:
+        DL1: File exists
+        DL2: Minimum size (100 bytes)
+        DL3: Required sections present (Step, Checkpoint Type, Decision, Rationale, Timestamp)
+        DL4: Step number in log matches expected step_num
+        DL5: Rationale field is non-empty (has meaningful content)
+        DL6: Decision field is non-empty
+
+    Args:
+        project_dir: Project root directory
+        step_num: Expected step number for the decision log
+        current_step: SOT current_step for cross-check (optional)
+
+    Returns: dict with valid (bool), warnings (list), checks (dict)
+    """
+    result = {"valid": True, "warnings": [], "checks": {}, "step": step_num}
+    log_path = os.path.join(project_dir, "autopilot-logs", f"step-{step_num}-decision.md")
+
+    # DL1: File exists
+    if not os.path.exists(log_path):
+        result["valid"] = False
+        result["warnings"].append(
+            f"DL1: Decision log not found: autopilot-logs/step-{step_num}-decision.md"
+        )
+        result["checks"]["DL1"] = "FAIL"
+        return result
+    result["checks"]["DL1"] = "PASS"
+
+    # DL2: Minimum size
+    size = os.path.getsize(log_path)
+    if size < _DL_MIN_SIZE:
+        result["valid"] = False
+        result["warnings"].append(
+            f"DL2: Decision log too small: {size} bytes (min {_DL_MIN_SIZE})"
+        )
+        result["checks"]["DL2"] = "FAIL"
+        return result
+    result["checks"]["DL2"] = "PASS"
+
+    # Read content for structural checks
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception as e:
+        result["valid"] = False
+        result["warnings"].append(f"DL2b: Cannot read decision log: {e}")
+        result["checks"]["DL2"] = "FAIL"
+        return result
+
+    # DL3: Required sections present
+    missing = []
+    if not _DL_STEP_RE.search(content):
+        missing.append("Step")
+    if not _DL_CHECKPOINT_RE.search(content):
+        missing.append("Checkpoint Type")
+    if not _DL_DECISION_RE.search(content):
+        missing.append("Decision")
+    if not _DL_RATIONALE_RE.search(content):
+        missing.append("Rationale")
+    if not _DL_TIMESTAMP_RE.search(content):
+        missing.append("Timestamp")
+
+    if missing:
+        result["valid"] = False
+        result["warnings"].append(
+            f"DL3: Missing required sections: {', '.join(missing)}"
+        )
+        result["checks"]["DL3"] = "FAIL"
+    else:
+        result["checks"]["DL3"] = "PASS"
+
+    # DL4: Step number matches
+    step_match = _DL_STEP_RE.search(content)
+    if step_match:
+        logged_step = int(step_match.group(1))
+        if logged_step != step_num:
+            result["valid"] = False
+            result["warnings"].append(
+                f"DL4: Step number mismatch: log says {logged_step}, expected {step_num}"
+            )
+            result["checks"]["DL4"] = "FAIL"
+        else:
+            result["checks"]["DL4"] = "PASS"
+    else:
+        result["checks"]["DL4"] = "SKIP"  # Already caught by DL3
+
+    # DL5: Rationale is non-empty (meaningful content, not just the label)
+    rationale_match = _DL_RATIONALE_RE.search(content)
+    if rationale_match:
+        rationale_text = rationale_match.group(1).strip()
+        if len(rationale_text) < 10:
+            result["valid"] = False
+            result["warnings"].append(
+                f"DL5: Rationale too short: '{rationale_text}' ({len(rationale_text)} chars, min 10)"
+            )
+            result["checks"]["DL5"] = "FAIL"
+        else:
+            result["checks"]["DL5"] = "PASS"
+    else:
+        result["checks"]["DL5"] = "SKIP"  # Already caught by DL3
+
+    # DL6: Decision is non-empty
+    decision_match = _DL_DECISION_RE.search(content)
+    if decision_match:
+        decision_text = decision_match.group(1).strip()
+        if len(decision_text) < 5:
+            result["valid"] = False
+            result["warnings"].append(
+                f"DL6: Decision too short: '{decision_text}' ({len(decision_text)} chars, min 5)"
+            )
+            result["checks"]["DL6"] = "FAIL"
+        else:
+            result["checks"]["DL6"] = "PASS"
+    else:
+        result["checks"]["DL6"] = "SKIP"  # Already caught by DL3
+
+    return result
 
 
 # =============================================================================

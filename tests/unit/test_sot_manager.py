@@ -485,3 +485,207 @@ class TestConcurrentAccess:
             })
             result = sot_mod.cmd_update_team(pd, team_json)
             assert result["valid"] is True
+
+
+# ============================================================================
+# cmd_set_autopilot — SM-AP1
+# ============================================================================
+
+class TestCmdSetAutopilot:
+    """Tests for cmd_set_autopilot."""
+
+    def test_set_autopilot_true(self, sot_mod, tmp_project_with_sot):
+        pd = str(tmp_project_with_sot)
+        result = sot_mod.cmd_set_autopilot(pd, "true")
+        assert result["valid"] is True
+        assert result["enabled"] is True
+        # Verify persisted
+        read = sot_mod.cmd_read(pd)
+        assert read["workflow"]["autopilot"]["enabled"] is True
+
+    def test_set_autopilot_false(self, sot_mod, tmp_project_with_sot):
+        pd = str(tmp_project_with_sot)
+        sot_mod.cmd_set_autopilot(pd, "true")
+        result = sot_mod.cmd_set_autopilot(pd, "false")
+        assert result["valid"] is True
+        assert result["enabled"] is False
+        assert result["previous"] is True
+
+    def test_set_autopilot_invalid_value(self, sot_mod, tmp_project_with_sot):
+        pd = str(tmp_project_with_sot)
+        result = sot_mod.cmd_set_autopilot(pd, "yes")
+        assert result["valid"] is False
+        assert "SM-AP1" in result["error"]
+
+    def test_set_autopilot_creates_section(self, sot_mod, tmp_project):
+        """If autopilot section doesn't exist, it should be auto-created."""
+        pd = str(tmp_project)
+        sot_mod.cmd_init(pd, "Test", 5)
+        # Remove autopilot section manually
+        import yaml
+        sot_path = sot_mod._sot_path(pd)
+        with open(sot_path, "r") as f:
+            data = yaml.safe_load(f)
+        del data["workflow"]["autopilot"]
+        with open(sot_path, "w") as f:
+            yaml.dump(data, f)
+        # Now set autopilot
+        result = sot_mod.cmd_set_autopilot(pd, "true")
+        assert result["valid"] is True
+        assert result["enabled"] is True
+
+    def test_set_autopilot_toggle(self, sot_mod, tmp_project_with_sot):
+        pd = str(tmp_project_with_sot)
+        sot_mod.cmd_set_autopilot(pd, "true")
+        sot_mod.cmd_set_autopilot(pd, "false")
+        result = sot_mod.cmd_set_autopilot(pd, "true")
+        assert result["valid"] is True
+        assert result["previous"] is False
+        assert result["enabled"] is True
+
+    def test_set_autopilot_no_sot(self, sot_mod, tmp_project):
+        pd = str(tmp_project)
+        result = sot_mod.cmd_set_autopilot(pd, "true")
+        assert result["valid"] is False
+
+
+# ============================================================================
+# cmd_add_auto_approved — SM-AA1~AA4
+# ============================================================================
+
+class TestCmdAddAutoApproved:
+    """Tests for cmd_add_auto_approved."""
+
+    def _enable_autopilot(self, sot_mod, pd):
+        sot_mod.cmd_set_autopilot(pd, "true")
+
+    def test_approve_human_step(self, sot_mod, tmp_project_with_sot):
+        """SM-AA1: Human step 4 should be accepted."""
+        pd = str(tmp_project_with_sot)
+        self._enable_autopilot(sot_mod, pd)
+        # Set current_step to 4 so step 4 is not future
+        import yaml
+        sot_path = sot_mod._sot_path(pd)
+        with open(sot_path, "r") as f:
+            data = yaml.safe_load(f)
+        data["workflow"]["current_step"] = 4
+        with open(sot_path, "w") as f:
+            yaml.dump(data, f)
+        result = sot_mod.cmd_add_auto_approved(pd, 4)
+        assert result["valid"] is True
+        assert result["action"] == "auto_approved"
+        assert 4 in result["auto_approved_steps"]
+
+    def test_reject_non_human_step(self, sot_mod, tmp_project_with_sot):
+        """SM-AA1: Non-human step 5 should be rejected."""
+        pd = str(tmp_project_with_sot)
+        self._enable_autopilot(sot_mod, pd)
+        result = sot_mod.cmd_add_auto_approved(pd, 5)
+        assert result["valid"] is False
+        assert "SM-AA1" in result["error"]
+
+    def test_reject_when_autopilot_off(self, sot_mod, tmp_project_with_sot):
+        """SM-AA2: Cannot add when autopilot is disabled."""
+        pd = str(tmp_project_with_sot)
+        # Autopilot is off by default after init
+        result = sot_mod.cmd_add_auto_approved(pd, 4)
+        assert result["valid"] is False
+        assert "SM-AA2" in result["error"]
+
+    def test_idempotent(self, sot_mod, tmp_project_with_sot):
+        """SM-AA3: Adding same step twice should succeed (idempotent)."""
+        pd = str(tmp_project_with_sot)
+        self._enable_autopilot(sot_mod, pd)
+        import yaml
+        sot_path = sot_mod._sot_path(pd)
+        with open(sot_path, "r") as f:
+            data = yaml.safe_load(f)
+        data["workflow"]["current_step"] = 8
+        with open(sot_path, "w") as f:
+            yaml.dump(data, f)
+        sot_mod.cmd_add_auto_approved(pd, 8)
+        result = sot_mod.cmd_add_auto_approved(pd, 8)
+        assert result["valid"] is True
+        assert result["action"] == "already_approved"
+
+    def test_reject_future_step(self, sot_mod, tmp_project_with_sot):
+        """SM-AA4: Cannot approve future steps."""
+        pd = str(tmp_project_with_sot)
+        self._enable_autopilot(sot_mod, pd)
+        # current_step is 1, step 18 is future
+        result = sot_mod.cmd_add_auto_approved(pd, 18)
+        assert result["valid"] is False
+        assert "SM-AA4" in result["error"]
+
+    def test_sorted_output(self, sot_mod, tmp_project_with_sot):
+        """auto_approved_steps should be sorted after insertion."""
+        pd = str(tmp_project_with_sot)
+        self._enable_autopilot(sot_mod, pd)
+        import yaml
+        sot_path = sot_mod._sot_path(pd)
+        with open(sot_path, "r") as f:
+            data = yaml.safe_load(f)
+        data["workflow"]["current_step"] = 20
+        with open(sot_path, "w") as f:
+            yaml.dump(data, f)
+        sot_mod.cmd_add_auto_approved(pd, 18)
+        sot_mod.cmd_add_auto_approved(pd, 4)
+        result = sot_mod.cmd_add_auto_approved(pd, 8)
+        read = sot_mod.cmd_read(pd)
+        aas = read["workflow"]["autopilot"]["auto_approved_steps"]
+        assert aas == sorted(aas)
+
+
+# ============================================================================
+# _validate_schema — SM-AP1~AP4
+# ============================================================================
+
+class TestValidateSchemaAutopilot:
+    """Tests for autopilot schema validation in _validate_schema."""
+
+    def test_valid_autopilot_section(self, sot_mod):
+        wf = {"autopilot": {"enabled": True, "auto_approved_steps": [4, 8]}}
+        warnings = sot_mod._validate_schema(wf)
+        ap_warnings = [w for w in warnings if "AP" in w]
+        assert len(ap_warnings) == 0
+
+    def test_autopilot_not_dict(self, sot_mod):
+        wf = {"autopilot": "yes"}
+        warnings = sot_mod._validate_schema(wf)
+        assert any("SM-AP1" in w for w in warnings)
+
+    def test_enabled_not_bool(self, sot_mod):
+        wf = {"autopilot": {"enabled": "true", "auto_approved_steps": []}}
+        warnings = sot_mod._validate_schema(wf)
+        assert any("SM-AP2" in w for w in warnings)
+
+    def test_auto_approved_not_list(self, sot_mod):
+        wf = {"autopilot": {"enabled": True, "auto_approved_steps": "4,8"}}
+        warnings = sot_mod._validate_schema(wf)
+        assert any("SM-AP3" in w for w in warnings)
+
+    def test_auto_approved_non_int(self, sot_mod):
+        wf = {"autopilot": {"enabled": True, "auto_approved_steps": ["4"]}}
+        warnings = sot_mod._validate_schema(wf)
+        assert any("SM-AP3" in w and "non-int" in w for w in warnings)
+
+    def test_auto_approved_non_human_step(self, sot_mod):
+        wf = {"autopilot": {"enabled": True, "auto_approved_steps": [5]}}
+        warnings = sot_mod._validate_schema(wf)
+        assert any("SM-AP4" in w for w in warnings)
+
+    def test_no_autopilot_section_no_warning(self, sot_mod):
+        wf = {"current_step": 1, "outputs": {}}
+        warnings = sot_mod._validate_schema(wf)
+        ap_warnings = [w for w in warnings if "AP" in w]
+        assert len(ap_warnings) == 0
+
+    def test_init_includes_autopilot_section(self, sot_mod, tmp_project):
+        """cmd_init should create SOT with autopilot section."""
+        pd = str(tmp_project)
+        sot_mod.cmd_init(pd, "Test", 10)
+        read = sot_mod.cmd_read(pd)
+        wf = read["workflow"]
+        assert "autopilot" in wf
+        assert wf["autopilot"]["enabled"] is False
+        assert wf["autopilot"]["auto_approved_steps"] == []

@@ -27,6 +27,10 @@ import sys
 # D-7 intentional duplication — must match _context_lib.py:SOT_FILENAMES
 SOT_FILENAMES = ("state.yaml", "state.yml", "state.json")
 MIN_OUTPUT_SIZE = 100
+# D-7 intentional duplication — must match sot_manager.py:HUMAN_STEPS,
+# run_quality_gates.py:HUMAN_STEPS, _context_lib.py:HUMAN_STEPS_SET,
+# and prompt/workflow.md "Steps 4, 8, 18"
+HUMAN_STEPS = frozenset({4, 8, 18})
 
 
 def _find_sot(project_dir):
@@ -120,6 +124,49 @@ def _check_review_log(project_dir, step_num):
         return "ERROR"
 
 
+def _check_decision_log(project_dir, step_num):
+    """Check if autopilot decision log exists for a human step.
+
+    Returns (exists: bool, path: str).
+    """
+    log_path = os.path.join(project_dir, "autopilot-logs", f"step-{step_num}-decision.md")
+    return os.path.exists(log_path), log_path
+
+
+def _read_autopilot_enabled(project_dir):
+    """Read autopilot.enabled from SOT via sot_manager.py --read (canonical reader).
+
+    Uses subprocess to avoid duplicating SOT parsing logic.
+    Returns (enabled: bool, error: str|None).
+    Fail-safe: subprocess failure returns (False, error_message) — caller
+    must treat error as blocking, not as "autopilot off".
+    """
+    try:
+        import subprocess
+        sot_manager = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "sot_manager.py")
+        result = subprocess.run(
+            [sys.executable, sot_manager, "--read", "--project-dir", project_dir],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            data = json.loads(result.stdout.strip())
+            if data.get("valid"):
+                wf = data.get("workflow", {})
+                ap = wf.get("autopilot")
+                if isinstance(ap, dict):
+                    return bool(ap.get("enabled", False)), None
+                return False, None  # No autopilot section — not enabled
+            return False, f"SOT read returned valid=false: {data.get('error', 'unknown')}"
+        if result.returncode != 0:
+            return False, f"sot_manager.py exit code {result.returncode}: {result.stderr[:200]}"
+        return False, None  # Empty stdout, no SOT — not an error, just no SOT
+    except subprocess.TimeoutExpired:
+        return False, "sot_manager.py --read timed out (10s)"
+    except Exception as e:
+        return False, f"SOT read failed: {e}"
+
+
 def validate_transition(project_dir, step_num):
     """Validate all pre-conditions for advancing past step_num."""
     result = {
@@ -151,8 +198,8 @@ def validate_transition(project_dir, step_num):
     for prev in range(1, step_num):
         key = f"step-{prev}"
         if key not in outputs:
-            # Skip human steps (4, 8, 18) which have no file output
-            if prev in (4, 8, 18):
+            # Skip human steps which have no file output
+            if prev in HUMAN_STEPS:
                 continue
             result["blocking"].append(f"ST2: No output for {key}")
             st2_pass = False
@@ -210,6 +257,28 @@ def validate_transition(project_dir, step_num):
             result["checks"]["ST6"] = "PASS"
     else:
         result["checks"]["ST6"] = "N/A"
+
+    # ST7: Decision log check (autopilot + human step only)
+    if step_num in HUMAN_STEPS:
+        autopilot_on, ap_error = _read_autopilot_enabled(project_dir)
+        if ap_error:
+            # Fail-safe: SOT read failure is blocking, not silent skip
+            result["blocking"].append(f"ST7: Cannot determine autopilot state: {ap_error}")
+            result["checks"]["ST7"] = "FAIL"
+        elif autopilot_on:
+            exists, log_path = _check_decision_log(project_dir, step_num)
+            if not exists:
+                result["blocking"].append(
+                    f"ST7: Autopilot decision log missing for human step {step_num}: "
+                    f"autopilot-logs/step-{step_num}-decision.md"
+                )
+                result["checks"]["ST7"] = "FAIL"
+            else:
+                result["checks"]["ST7"] = "PASS"
+        else:
+            result["checks"]["ST7"] = "N/A"  # Manual mode — human is the audit trail
+    else:
+        result["checks"]["ST7"] = "N/A"
 
     # Final verdict
     if result["blocking"]:

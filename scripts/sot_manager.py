@@ -11,6 +11,8 @@ Usage:
     python3 scripts/sot_manager.py --update-pacs 3 --F 85 --C 78 --L 80 --project-dir .
     python3 scripts/sot_manager.py --update-team '{"name":"team-x","status":"partial","tasks_completed":[],"tasks_pending":["t1"]}' --project-dir .
     python3 scripts/sot_manager.py --init --workflow-name "GlobalNews Auto-Build" --total-steps 20 --project-dir .
+    python3 scripts/sot_manager.py --set-autopilot true --project-dir .
+    python3 scripts/sot_manager.py --add-auto-approved 8 --project-dir .
 
 All output is JSON to stdout. Exit code 0 always (errors in JSON).
 """
@@ -32,6 +34,10 @@ MIN_OUTPUT_SIZE = 100  # bytes — L0 Anti-Skip Guard threshold
 # D-7 intentional duplication — must match _context_lib.py:validate_sot_schema() valid_statuses
 VALID_STATUSES = {"in_progress", "completed", "failed", "running", "error", "paused"}
 VALID_TEAM_STATUSES = {"partial", "all_completed"}
+# D-7 intentional duplication — must match run_quality_gates.py:HUMAN_STEPS,
+# validate_step_transition.py:HUMAN_STEPS, _context_lib.py:HUMAN_STEPS_SET,
+# and prompt/workflow.md "Steps 4, 8, 18"
+HUMAN_STEPS = frozenset({4, 8, 18})
 
 # ---------------------------------------------------------------------------
 # YAML helpers (PyYAML preferred, regex fallback)
@@ -199,6 +205,28 @@ def _validate_schema(wf):
     if status and status not in VALID_STATUSES:
         warnings.append(f"SM3: status '{status}' not in {VALID_STATUSES}")
 
+    # SM-AP1: autopilot.enabled must be bool (if autopilot section exists)
+    ap = wf.get("autopilot")
+    if ap is not None:
+        if not isinstance(ap, dict):
+            warnings.append(f"SM-AP1: autopilot is {type(ap).__name__}, expected dict")
+        else:
+            enabled = ap.get("enabled")
+            if enabled is not None and not isinstance(enabled, bool):
+                warnings.append(f"SM-AP2: autopilot.enabled is {type(enabled).__name__}, expected bool")
+
+            # SM-AP3: auto_approved_steps must be list of ints in HUMAN_STEPS
+            aas = ap.get("auto_approved_steps")
+            if aas is not None:
+                if not isinstance(aas, list):
+                    warnings.append(f"SM-AP3: auto_approved_steps is {type(aas).__name__}, expected list")
+                else:
+                    for item in aas:
+                        if not isinstance(item, int):
+                            warnings.append(f"SM-AP3: auto_approved_steps contains non-int: {item}")
+                        elif item not in HUMAN_STEPS:
+                            warnings.append(f"SM-AP4: auto_approved_steps contains non-human step: {item}")
+
     return warnings
 
 
@@ -245,6 +273,10 @@ def cmd_init(project_dir, workflow_name, total_steps):
                 ],
             },
             "outputs": {},
+            "autopilot": {
+                "enabled": False,
+                "auto_approved_steps": [],
+            },
             "pending_human_action": {"step": None, "options": []},
             "verification": {"last_verified_step": 0, "retries": {}},
             "pacs": {
@@ -518,6 +550,93 @@ def cmd_update_team(project_dir, team_json):
         return {"valid": False, "error": str(e)}
 
 
+def cmd_set_autopilot(project_dir, enabled_str):
+    """Set autopilot.enabled to true or false."""
+    # SM-AP1: Validate input value
+    if enabled_str not in ("true", "false"):
+        return {"valid": False, "error": f"SM-AP1: enabled must be 'true' or 'false', got '{enabled_str}'"}
+    enabled = enabled_str == "true"
+    try:
+        sot = _sot_path(project_dir)
+        with _SOTLock(sot, exclusive=True):
+            data, sot = _read_sot_unlocked(project_dir)
+            wf = _extract_wf(data)
+
+            # Ensure autopilot section exists
+            if "autopilot" not in wf or not isinstance(wf.get("autopilot"), dict):
+                wf["autopilot"] = {"enabled": False, "auto_approved_steps": []}
+
+            old_val = wf["autopilot"].get("enabled", False)
+            wf["autopilot"]["enabled"] = enabled
+            _write_sot_atomic(sot, data)
+
+            return {
+                "valid": True,
+                "action": "autopilot_set",
+                "previous": old_val,
+                "enabled": enabled,
+            }
+    except Exception as e:
+        return {"valid": False, "error": str(e)}
+
+
+def cmd_add_auto_approved(project_dir, step_num):
+    """Record a human step as auto-approved in autopilot.auto_approved_steps."""
+    # SM-AA1: Must be a human step
+    if step_num not in HUMAN_STEPS:
+        return {
+            "valid": False,
+            "error": f"SM-AA1: step {step_num} is not a human step. HUMAN_STEPS = {sorted(HUMAN_STEPS)}",
+        }
+    try:
+        sot = _sot_path(project_dir)
+        with _SOTLock(sot, exclusive=True):
+            data, sot = _read_sot_unlocked(project_dir)
+            wf = _extract_wf(data)
+
+            # SM-AA2: autopilot must be enabled
+            ap = wf.get("autopilot")
+            if not isinstance(ap, dict) or not ap.get("enabled"):
+                return {
+                    "valid": False,
+                    "error": "SM-AA2: autopilot is not enabled. Enable with --set-autopilot true first.",
+                }
+
+            # SM-AA4: Cannot approve future steps
+            cs = wf.get("current_step", 0)
+            if step_num > cs:
+                return {
+                    "valid": False,
+                    "error": f"SM-AA4: cannot approve future step {step_num} (current_step={cs})",
+                }
+
+            # SM-AA3: Idempotent — already present is success
+            aas = ap.get("auto_approved_steps", [])
+            if not isinstance(aas, list):
+                aas = []
+            if step_num in aas:
+                return {
+                    "valid": True,
+                    "action": "already_approved",
+                    "step": step_num,
+                    "auto_approved_steps": sorted(aas),
+                }
+
+            aas.append(step_num)
+            aas.sort()
+            ap["auto_approved_steps"] = aas
+            _write_sot_atomic(sot, data)
+
+            return {
+                "valid": True,
+                "action": "auto_approved",
+                "step": step_num,
+                "auto_approved_steps": aas,
+            }
+    except Exception as e:
+        return {"valid": False, "error": str(e)}
+
+
 def cmd_set_status(project_dir, new_status):
     """Set workflow status (e.g., in_progress → completed)."""
     if new_status not in VALID_STATUSES:
@@ -559,6 +678,8 @@ def main():
     parser.add_argument("--L", type=float, help="L dimension score")
     parser.add_argument("--update-team", metavar="JSON", help="Update active_team (JSON string)")
     parser.add_argument("--set-status", metavar="STATUS", help="Set workflow status (in_progress, completed, failed, etc.)")
+    parser.add_argument("--set-autopilot", metavar="BOOL", help="Set autopilot enabled (true/false)")
+    parser.add_argument("--add-auto-approved", type=int, metavar="STEP", help="Record a human step as auto-approved")
 
     args = parser.parse_args()
 
@@ -581,8 +702,12 @@ def main():
         result = cmd_update_team(args.project_dir, args.update_team)
     elif args.set_status:
         result = cmd_set_status(args.project_dir, args.set_status)
+    elif args.set_autopilot:
+        result = cmd_set_autopilot(args.project_dir, args.set_autopilot)
+    elif args.add_auto_approved is not None:
+        result = cmd_add_auto_approved(args.project_dir, args.add_auto_approved)
     else:
-        result = {"valid": False, "error": "No command specified. Use --read, --init, --advance-step, --record-output, --update-pacs, --update-team, or --set-status"}
+        result = {"valid": False, "error": "No command specified. Use --read, --init, --advance-step, --record-output, --update-pacs, --update-team, --set-status, --set-autopilot, or --add-auto-approved"}
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

@@ -188,12 +188,12 @@ df.groupby('topic_label')['sentiment_score'].mean().sort_values()
 | 3단계 구조 | Research (4) → Planning (4) → Implementation (12) |
 | SOT 패턴 | `.claude/state.yaml` — Orchestrator만 쓰기 |
 | 4계층 QA | L0 Anti-Skip → L1 Verification → L1.5 pACS → L2 Review |
-| P1 봉쇄 | 13개 결정론적 검증 스크립트 |
+| P1 봉쇄 | 14개 결정론적 검증 스크립트 |
 | 전문가 위임 | 32개 전문 서브에이전트, 6개 에이전트 팀 |
 | Safety Hooks | 위험 명령 차단, TDD 보호, 예측적 디버깅 |
 | Context Preservation | 스냅샷 + Knowledge Archive + RLM 복원 |
 
-**도메인 고유 변이**: 4-Level 재시도 (90회), 44-site Adapter Pattern, 5-Layer Signal Hierarchy, Date-Partitioned Storage
+**도메인 고유 변이**: 4-Level 재시도 (90회), 44-site Adapter Pattern, 5-Layer Signal Hierarchy, Date-Partitioned Storage, HQ Gates (3종 Human-step 품질 검증)
 
 ---
 
