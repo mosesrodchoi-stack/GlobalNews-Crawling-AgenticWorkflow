@@ -34,12 +34,13 @@ from datetime import datetime
 # Constants
 # =============================================================================
 
-# Hook scripts that must exist and have valid Python syntax (19 scripts)
+# Hook scripts that must exist and have valid Python syntax (21 scripts)
 # D-7: Intentionally duplicated in setup_maintenance.py — setup scripts are
 # independent from _context_lib.py by design (no import dependency).
 REQUIRED_SCRIPTS = [
     "_context_lib.py",
     "block_destructive_commands.py",
+    "block_secret_leak.py",
     "block_test_file_edit.py",
     "context_guard.py",
     "diagnose_context.py",
@@ -48,6 +49,7 @@ REQUIRED_SCRIPTS = [
     "restore_context.py",
     "save_context.py",
     "update_work_log.py",
+    "validate_decision_log.py",
     "validate_diagnosis.py",
     "validate_domain_knowledge.py",
     "validate_pacs.py",

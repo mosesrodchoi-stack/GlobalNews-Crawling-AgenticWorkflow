@@ -45,6 +45,9 @@ from _context_lib import (
     archive_and_index_session,
     detect_ulw_mode,
     check_ulw_compliance,
+    detect_phase_transitions,
+    estimate_tokens,
+    EFFECTIVE_CAPACITY,
 )
 
 
@@ -181,6 +184,14 @@ def main():
     # Non-blocking: only logs warning to stderr, does not fail the hook.
     try:
         _check_ulw_compliance_safety_net(entries)
+    except Exception:
+        pass  # Non-blocking — never fail the hook
+
+    # --- Phase-Aware Compact suggestion ---
+    # Suggest /compact at logical phase boundaries.
+    # Non-blocking: only logs to stderr, does not fail the hook.
+    try:
+        _suggest_compact_if_needed(entries, transcript_path, snapshot_dir, session_id)
     except Exception:
         pass  # Non-blocking — never fail the hook
 
@@ -651,6 +662,64 @@ def _check_missing_diagnosis(project_dir):
                     )
         except OSError:
             pass
+
+
+def _suggest_compact_if_needed(entries, transcript_path, snapshot_dir, session_id="unknown"):
+    """Phase 전환 감지 시 compact 제안 (stderr, exit 0).
+
+    P1: detect_phase_transitions() is deterministic (sliding window + tool ratio).
+    Non-blocking: stderr warning only. Claude decides whether to compact.
+    Dedup: .last_compact_suggestion marker file — max 1 per session.
+    Session-scoped: marker stores session_id to avoid cross-session persistence (C1 fix).
+    """
+    suggestion_marker = os.path.join(snapshot_dir, ".last_compact_suggestion")
+
+    # Session-scoped dedup (max 1 suggestion per session)
+    # Marker stores "session_id|timestamp". If session_id differs, stale marker is removed.
+    if os.path.exists(suggestion_marker):
+        try:
+            with open(suggestion_marker, "r") as f:
+                stored = f.read().strip()
+            stored_session = stored.split("|")[0] if stored else ""
+            if stored_session == session_id:
+                return  # Same session — already suggested
+            # Different session — stale marker, remove and continue
+        except Exception:
+            pass
+
+    # Token estimation
+    token_estimate, _ = estimate_tokens(transcript_path, entries=entries)
+    token_ratio = token_estimate / EFFECTIVE_CAPACITY if EFFECTIVE_CAPACITY > 0 else 0
+
+    # Extract tool_use entries for phase transition detection
+    tool_uses = [e for e in entries if e.get("type") == "tool_use"]
+
+    suggest = False
+    reason = ""
+
+    # Condition 1: Phase transition detected + tokens 50%+ used
+    transitions = detect_phase_transitions(tool_uses)
+    if len(transitions) >= 2 and token_ratio >= 0.5:
+        suggest = True
+        phases = " -> ".join(t[0] for t in transitions)
+        reason = f"Phase transition ({phases}) + tokens {token_ratio:.0%}"
+
+    # Condition 2: Tokens 65%+ + 50+ tool uses (high-usage session)
+    if not suggest and token_ratio >= 0.65 and len(tool_uses) >= 50:
+        suggest = True
+        reason = f"Tools {len(tool_uses)} + tokens {token_ratio:.0%}"
+
+    if suggest:
+        try:
+            with open(suggestion_marker, "w") as f:
+                f.write(f"{session_id}|{datetime.now().isoformat()}")
+        except Exception:
+            pass
+        print(
+            f"COMPACT SUGGESTION: {reason}. "
+            f"Running /compact at this logical boundary improves context preservation quality.",
+            file=sys.stderr,
+        )
 
 
 def _check_ulw_compliance_safety_net(entries):

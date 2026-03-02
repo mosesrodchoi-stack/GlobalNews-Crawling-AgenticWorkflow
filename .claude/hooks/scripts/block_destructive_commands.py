@@ -21,12 +21,15 @@ Blocked patterns (from Claude Code safety guidelines):
   - git clean -f (removes untracked files)
   - git branch -D or --delete --force (force-deletes branch)
   - rm -rf / or rm -rf ~ (catastrophic file deletion)
+  - cat .env / printenv / env | / echo $SECRET_VAR (secret exposure)
+  - DROP TABLE / DROP DATABASE / TRUNCATE / DELETE without WHERE (destructive SQL)
 
 Known limitations:
   - Commands in string literals may cause false positives
     (e.g., echo "git push --force" would be blocked).
     Acceptable: false positive > false negative for safety hooks.
   - Patterns check the raw command string, not parsed shell AST.
+  - SQL in string literals may cause false positives for SQL patterns.
 
 Safety-first: Any unexpected internal error → exit(0) (never block Claude).
 
@@ -110,16 +113,95 @@ GIT_PATTERNS = [
     ),
 ]
 
+# ---------------------------------------------------------------------------
+# Secret-exposing command patterns (PreToolUse — input-based detection)
+# ---------------------------------------------------------------------------
+SECRET_SOURCE_PATTERNS = [
+    (
+        re.compile(r"\bcat\s+[^\s]*\.env\b"),
+        "cat .env is blocked. Secrets may leak to output.",
+    ),
+    (
+        re.compile(r"\bprintenv\b"),
+        "printenv is blocked. Environment variables may contain secrets.",
+    ),
+    (
+        re.compile(r"\benv\s*\|"),
+        "env piped output is blocked. May expose secrets.",
+    ),
+    (
+        re.compile(
+            r"\becho\s+\$[A-Z_]*(?:KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL)",
+            re.I,
+        ),
+        "Echoing secret environment variable is blocked.",
+    ),
+]
+
+# ---------------------------------------------------------------------------
+# Destructive SQL patterns
+# ---------------------------------------------------------------------------
+SQL_PATTERNS = [
+    (
+        re.compile(r"\bDROP\s+TABLE\b", re.I),
+        "DROP TABLE is blocked. Irreversible data loss.",
+    ),
+    (
+        re.compile(r"\bDROP\s+DATABASE\b", re.I),
+        "DROP DATABASE is blocked. Irreversible.",
+    ),
+    (
+        re.compile(r"\bTRUNCATE\s+", re.I),
+        "TRUNCATE is blocked. Deletes all rows without logging.",
+    ),
+    (
+        re.compile(r"\bALTER\s+TABLE\b.*\bDROP\b", re.I),
+        "ALTER TABLE DROP is blocked.",
+    ),
+]
+
+
+def _check_dangerous_sql(sub_command: str) -> Optional[str]:
+    """Check for destructive SQL in sub-command (already split by shell operators).
+
+    DELETE FROM is only blocked when no WHERE clause follows
+    within the same SQL statement (semicolon-delimited).
+
+    Known limitation: SQL in string literals may cause false positives.
+    Acceptable: false positive > false negative (consistent with GIT_PATTERNS philosophy).
+    """
+    # Check non-statement-level patterns first (these apply to entire sub-command)
+    for pattern, message in SQL_PATTERNS:
+        if pattern.search(sub_command):
+            return message
+    # DELETE FROM: split by SQL statement terminator for precise WHERE detection
+    for sql_stmt in re.split(r";", sub_command):
+        if re.search(r"\bDELETE\s+FROM\b", sql_stmt, re.I):
+            if not re.search(r"\bWHERE\b", sql_stmt, re.I):
+                return (
+                    "DELETE without WHERE is blocked. "
+                    "Add WHERE clause for targeted deletion."
+                )
+    return None
+
 
 def _check_dangerous_rm(sub_command: str) -> Optional[str]:
     """Check if an rm sub-command targets root or home with recursive+force.
 
     Parses flags and targets separately to handle all flag orderings:
     rm -rf /, rm -fr /, rm -r -f /, etc.
+    C4 fix: also handles sudo prefix (sudo rm -rf /).
     """
     tokens = sub_command.split()
-    if not tokens or tokens[0] != "rm":
+    if not tokens:
         return None
+    # Skip sudo prefix(es) to find the actual rm command
+    idx = 0
+    while idx < len(tokens) and tokens[idx] == "sudo":
+        idx += 1
+    if idx >= len(tokens) or tokens[idx] != "rm":
+        return None
+    tokens = tokens[idx:]  # Re-base to rm as first token
 
     # Collect all single-dash flag characters and targets
     flags = ""
@@ -151,16 +233,32 @@ def check_command(command: str) -> Optional[str]:
     """Check command against all destructive patterns.
 
     Returns block message if pattern matches, None otherwise.
+
+    Check order:
+      (1) Git patterns — entire command string
+      (2) Secret source patterns — entire command string
+      (3) Sub-command level — SQL patterns + rm patterns (shell operator split)
     """
-    # Git patterns: check entire command string (regex handles flag positions)
+    # (1) Git patterns: check entire command string (regex handles flag positions)
     for pattern, message in GIT_PATTERNS:
         if pattern.search(command):
             return message
 
-    # rm patterns: split by shell operators and check each sub-command
+    # (2) Secret source patterns: check entire command string
+    for pattern, message in SECRET_SOURCE_PATTERNS:
+        if pattern.search(command):
+            return message
+
+    # (3) Sub-command level checks (shell operator split)
     for sub_cmd in re.split(r"\s*(?:&&|\|\||;)\s*", command):
         for segment in sub_cmd.split("|"):
-            result = _check_dangerous_rm(segment.strip())
+            segment = segment.strip()
+            # SQL patterns
+            result = _check_dangerous_sql(segment)
+            if result:
+                return result
+            # rm patterns (existing)
+            result = _check_dangerous_rm(segment)
             if result:
                 return result
 

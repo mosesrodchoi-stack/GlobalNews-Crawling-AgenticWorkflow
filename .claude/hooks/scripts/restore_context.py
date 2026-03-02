@@ -36,6 +36,7 @@ from _context_lib import (
     validate_step_output, validate_sot_schema, sot_paths,
     extract_path_tags, extract_recurring_error_types,
     aggregate_risk_scores, atomic_write,
+    extract_learned_patterns,
 )
 
 
@@ -418,6 +419,18 @@ def _build_recovery_output(source, latest_path, summary, sot_warning, snapshot_a
                 output_lines.append("■ 반복 에러 타입 (자동 표면화 — P1):")
                 for etype, count in recurring_types:
                     output_lines.append(f"  - {etype}: {count}개 세션에서 반복")
+
+            # P1-4: Proactive learned pattern surfacing
+            # Auto-surfaces success patterns recurring across 3+ sessions
+            # Completes P1 chain: success_patterns (Producer) → extract_learned_patterns (Consumer)
+            learned = extract_learned_patterns(ki_path)
+            if learned:
+                output_lines.append("")
+                output_lines.append("■ 학습된 작업 패턴 (자동 표면화 — P1):")
+                for seq, count, conf, files_ex in learned:
+                    output_lines.append(
+                        f"  - {seq}: confidence {conf:.1f}, {count}개 세션에서 반복"
+                    )
 
             # P1-2: Proactive Diagnosis Pattern surfacing
             # Surface recent diagnosis patterns for cross-session learning

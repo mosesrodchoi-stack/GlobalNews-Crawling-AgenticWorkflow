@@ -3787,6 +3787,83 @@ def extract_recurring_error_types(ki_path, min_count=3, max_results=5):
     return recurring[:max_results]
 
 
+def extract_learned_patterns(ki_path, min_sessions=3, max_results=5):
+    """P1 Consumer: Extract success_patterns recurring across 3+ sessions.
+
+    Deterministic: JSON parsing + frequency counting. No LLM judgment.
+    Symmetric with extract_recurring_error_types() (success version).
+    Completes P1 chain: success_patterns (Producer) → this function (Consumer).
+
+    Args:
+        ki_path: Path to knowledge-index.jsonl
+        min_sessions: Minimum session count to qualify (default: 3)
+        max_results: Maximum patterns to return (default: 5)
+
+    Returns:
+        list of (sequence, session_count, confidence, files_example) tuples.
+        confidence = min(1.0, session_count / 5).
+        Empty list if no recurring patterns or file not found.
+    """
+    if not os.path.exists(ki_path):
+        return []
+
+    # sequence → set of session_ids (for dedup)
+    seq_sessions = {}
+    # sequence → one example files list (for display)
+    seq_files_example = {}
+
+    try:
+        with open(ki_path, "r", encoding="utf-8") as f:
+            for line_num, line in enumerate(f):
+                if line_num >= 200:  # Cap scan at 200 entries (~10ms)
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                session_id = entry.get("session_id", f"anon-{line_num}")
+                patterns = entry.get("success_patterns", [])
+                if not isinstance(patterns, list):
+                    continue
+
+                # Deduplicate within same session
+                seen_in_session = set()
+                for pat in patterns:
+                    if not isinstance(pat, dict):
+                        continue
+                    seq = pat.get("sequence", "")
+                    if not seq:
+                        continue
+                    # Normalize: strip whitespace, lowercase
+                    seq_norm = seq.strip().lower()
+                    if seq_norm in seen_in_session:
+                        continue
+                    seen_in_session.add(seq_norm)
+
+                    if seq_norm not in seq_sessions:
+                        seq_sessions[seq_norm] = set()
+                        seq_files_example[seq_norm] = pat.get("files", [])
+                    seq_sessions[seq_norm].add(session_id)
+    except (OSError, IOError):
+        return []
+
+    # Filter by min_sessions and sort
+    results = []
+    for seq_norm, sessions in seq_sessions.items():
+        count = len(sessions)
+        if count >= min_sessions:
+            confidence = min(1.0, count / 5)
+            files_ex = seq_files_example.get(seq_norm, [])
+            results.append((seq_norm, count, confidence, files_ex))
+
+    results.sort(key=lambda x: x[1], reverse=True)
+    return results[:max_results]
+
+
 def cleanup_session_archives(snapshot_dir):
     """Rotate session archives to keep MAX_SESSION_ARCHIVES files.
 

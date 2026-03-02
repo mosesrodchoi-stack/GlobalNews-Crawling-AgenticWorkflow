@@ -105,6 +105,16 @@ def main():
     # Cleanup old snapshots (keep per-trigger limits)
     cleanup_snapshots(snapshot_dir)
 
+    # Clean compact suggestion marker on SessionEnd (new session = new suggestion)
+    # NOT on PreCompact — compact may have been triggered BY the suggestion
+    if trigger == "sessionend":
+        compact_marker = os.path.join(snapshot_dir, ".last_compact_suggestion")
+        if os.path.exists(compact_marker):
+            try:
+                os.remove(compact_marker)
+            except OSError:
+                pass
+
     # Knowledge Archive: archive + index + cleanup (consolidated)
     archive_and_index_session(
         snapshot_dir, md_content, session_id, trigger,
