@@ -9,11 +9,13 @@ Tests:
     H-6: Python version constraints (4 files)
     H-8: GATE_DIRS mapping (validate_retry_budget.py ↔ generate_context_summary.py)
     H-9: Site registry cross-validation (5 hardcoded site lists)
+    H-13: ENABLED_DEFAULT sync (6 files — D-7 Instance 13)
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import sys
@@ -363,4 +365,89 @@ class TestSiteRegistrySync:
         assert result["checks"].get("RS4_total_count") == "PASS", (
             f"Total count mismatch:\n" +
             "\n".join(result.get("errors", []))
+        )
+
+
+# ---------------------------------------------------------------------------
+# H-13: ENABLED_DEFAULT Sync (D-7 Instance 13)
+# ---------------------------------------------------------------------------
+
+class TestEnabledDefaultSync:
+    """P1: Verify meta.enabled default value is identical across 6 files.
+
+    D-7 Instance 13: The opt-out pattern (sites enabled by default) uses
+    ENABLED_DEFAULT in 6 locations. 4 import from constants.py (SOT),
+    1 hardcodes (preflight_check.py — standalone, can't import src).
+    Desync causes site filtering to silently include/exclude different sites.
+    """
+
+    @pytest.fixture
+    def validator(self):
+        return _import_from_path(
+            "validate_enabled_default_sync",
+            os.path.join(SCRIPTS_DIR, "validate_enabled_default_sync.py"),
+        )
+
+    def test_all_checks_pass(self, validator):
+        """ED1-ED6 + ED-CROSS must all pass."""
+        result = validator.run_validation(PROJECT_ROOT)
+        assert result["valid"], (
+            f"ENABLED_DEFAULT sync failed:\n"
+            + json.dumps(result, indent=2)
+        )
+
+    def test_sot_value_is_true(self, validator):
+        """SOT (constants.py) ENABLED_DEFAULT must be True (opt-out pattern)."""
+        result = validator.run_validation(PROJECT_ROOT)
+        assert result["sot_value"] is True, (
+            f"ENABLED_DEFAULT SOT value is {result['sot_value']!r}, expected True"
+        )
+
+    def test_importers_reference_sot(self, validator):
+        """ED2-ED5, ED7 must reference ENABLED_DEFAULT by name (import from SOT)."""
+        result = validator.run_validation(PROJECT_ROOT)
+        for check_id in ("ED2", "ED3", "ED4", "ED5", "ED7"):
+            check = result["checks"][check_id]
+            assert check.get("references_sot"), (
+                f"{check_id} does not reference ENABLED_DEFAULT from SOT — "
+                f"uses hardcoded value instead"
+            )
+
+    def test_preflight_hardcoded_matches(self, validator):
+        """ED6 (preflight_check.py) hardcoded value must match SOT."""
+        result = validator.run_validation(PROJECT_ROOT)
+        ed6 = result["checks"]["ED6"]
+        assert ed6["valid"], f"ED6 extraction failed: {ed6.get('error')}"
+        assert ed6["value"] == result["sot_value"], (
+            f"preflight_check.py hardcodes {ed6['value']!r} "
+            f"but SOT is {result['sot_value']!r}"
+        )
+
+    def test_pipeline_has_at_least_3_locations(self, validator):
+        """ED4 must find at least 3 .get('enabled', ...) in pipeline.py."""
+        result = validator.run_validation(PROJECT_ROOT)
+        ed4 = result["checks"]["ED4"]
+        assert ed4["valid"], f"ED4 failed: {ed4.get('error')}"
+        assert ed4["count"] >= 3, (
+            f"pipeline.py has only {ed4['count']} .get('enabled', ...) calls, "
+            f"expected at least 3"
+        )
+
+    def test_crawler_references_sot(self, validator):
+        """ED7 (crawler.py) must reference ENABLED_DEFAULT from SOT."""
+        result = validator.run_validation(PROJECT_ROOT)
+        ed7 = result["checks"]["ED7"]
+        assert ed7["valid"], f"ED7 extraction failed: {ed7.get('error')}"
+        assert ed7.get("references_sot"), (
+            f"crawler.py uses hardcoded value {ed7['value']!r} "
+            f"instead of ENABLED_DEFAULT"
+        )
+
+    def test_no_cross_validation_mismatches(self, validator):
+        """ED-CROSS must have zero mismatches."""
+        result = validator.run_validation(PROJECT_ROOT)
+        cross = result["cross_validation"]
+        assert cross["valid"], (
+            f"ENABLED_DEFAULT cross-validation mismatches:\n"
+            + json.dumps(cross["mismatches"], indent=2)
         )

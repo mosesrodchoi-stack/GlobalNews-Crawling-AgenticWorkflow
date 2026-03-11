@@ -56,6 +56,7 @@ from src.config.constants import (
     DATA_RAW_DIR,
     CRAWL_GROUPS,
     RUN_METADATA_PATH,
+    ENABLED_DEFAULT,
 )
 from src.utils.logging_config import setup_logging, get_logger
 
@@ -387,7 +388,8 @@ def cmd_status(args: argparse.Namespace) -> int:
             from src.utils.config_loader import load_sources_config
             config = load_sources_config(validate=False)
             sources = config.get("sources", {})
-            enabled = sum(1 for s in sources.values() if s.get("meta", {}).get("enabled", False))
+            # D-7 (13): opt-out pattern — ENABLED_DEFAULT from constants.py (SOT)
+            enabled = sum(1 for s in sources.values() if s.get("meta", {}).get("enabled", ENABLED_DEFAULT))
             total_articles = sum(s.get("meta", {}).get("daily_article_estimate", 0) for s in sources.values())
             groups = {}
             for sid, cfg in sources.items():

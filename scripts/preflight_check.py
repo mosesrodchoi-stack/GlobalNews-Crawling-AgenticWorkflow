@@ -157,10 +157,13 @@ def check_config_files(project_dir: Path) -> dict[str, Any]:
                 config = yaml.safe_load(f)
             sources = config.get("sources", {})
             site_count = len(sources)
+            # D-7 (13): opt-out pattern — hardcoded True (standalone script, can't import src).
+            # SOT: src/config/constants.py ENABLED_DEFAULT = True
+            # Cross-validated by: scripts/validate_enabled_default_sync.py ED6
             enabled_count = sum(
                 1
                 for s in sources.values()
-                if s.get("meta", {}).get("enabled", False)
+                if s.get("meta", {}).get("enabled", True)
             )
             if site_count == 0:
                 issues.append("sources.yaml has 0 sites defined")

@@ -31,6 +31,7 @@ from src.config.constants import (
     DATA_RAW_DIR,
     MAX_ARTICLES_PER_SITE_PER_DAY,
     DEFAULT_RATE_LIMIT_SECONDS,
+    ENABLED_DEFAULT,
 )
 from src.crawling.contracts import RawArticle, CrawlResult, DiscoveredURL
 from src.crawling.network_guard import NetworkGuard
@@ -351,8 +352,8 @@ class Crawler:
             logger.info("site_already_complete source_id=%s", source_id)
             return result
 
-        # Check if site is enabled
-        if not site_config.get("meta", {}).get("enabled", True):
+        # Check if site is enabled — D-7 (13): ENABLED_DEFAULT from constants.py (SOT)
+        if not site_config.get("meta", {}).get("enabled", ENABLED_DEFAULT):
             logger.info("site_disabled source_id=%s", source_id)
             return result
 

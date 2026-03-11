@@ -233,3 +233,18 @@ VALID_PAYWALL_TYPES = {"none", "soft-metered", "hard"}
 VALID_DIFFICULTY_TIERS = {"Easy", "Medium", "Hard", "Extreme"}
 VALID_BOT_BLOCK_LEVELS = {"LOW", "MEDIUM", "HIGH"}
 VALID_PARQUET_COMPRESSIONS = {"zstd", "snappy", "lz4", "none"}
+
+# =============================================================================
+# Source Configuration Defaults
+# =============================================================================
+
+# D-7 (13): meta.enabled default — opt-out pattern (sites enabled by default).
+# Cross-ref: config_loader.py _SOURCE_DEFAULTS["meta"]["enabled"],
+#            config_loader.py get_enabled_sites(),
+#            pipeline.py _resolve_target_sites() + _run_single_pass() (3 locations),
+#            crawler.py crawl_site(),
+#            main.py status reporting,
+#            preflight_check.py enabled_count (hardcoded — standalone, can't import src)
+# Change this value → 5 consumers auto-sync via import, 1 AST-validated by
+# scripts/validate_enabled_default_sync.py (ED1-ED7 + ED-CROSS).
+ENABLED_DEFAULT = True

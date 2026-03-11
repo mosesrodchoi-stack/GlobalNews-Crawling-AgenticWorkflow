@@ -27,7 +27,46 @@ from src.config.constants import (
     VALID_BOT_BLOCK_LEVELS,
     VALID_PARQUET_COMPRESSIONS,
     MAX_MEMORY_GB,
+    DEFAULT_RATE_LIMIT_SECONDS,
+    ENABLED_DEFAULT,
 )
+
+
+# Sensible defaults for optional site configuration fields.
+# Applied during load to avoid bloating sources.yaml while ensuring
+# all downstream code receives a complete configuration.
+#
+# D-7: These values mirror adapter class attributes (BaseSiteAdapter subclasses).
+# Adapter class attrs are code-level documentation; these config defaults are
+# the runtime truth used by pipeline.py (line ~935) and network_guard.py.
+# When adapter defaults change, re-run the enrichment script or update here.
+# Cross-ref: src/crawling/adapters/base_adapter.py class attributes.
+_SOURCE_DEFAULTS: dict[str, dict[str, Any]] = {
+    "crawl": {
+        "rate_limit_seconds": DEFAULT_RATE_LIMIT_SECONDS,
+        "max_requests_per_hour": 720,
+        "jitter_seconds": 0,
+    },
+    "anti_block": {
+        "bot_block_level": "LOW",
+        "default_escalation_tier": 1,
+        "max_escalation_tier": 5,
+        "requires_proxy": False,
+    },
+    "extraction": {
+        "paywall_type": "none",
+        "title_only": False,
+        "rendering_required": False,
+        "charset": "utf-8",
+    },
+    "meta": {
+        "difficulty_tier": "Medium",
+        "daily_article_estimate": 50,
+        "sections_count": 5,
+        # D-7 (13): opt-out pattern — import from constants.py (SOT)
+        "enabled": ENABLED_DEFAULT,
+    },
+}
 
 
 class ConfigValidationError(Exception):
@@ -42,6 +81,34 @@ class ConfigValidationError(Exception):
 # Module-level cache for singleton pattern
 _sources_cache: dict[str, Any] | None = None
 _pipeline_cache: dict[str, Any] | None = None
+
+
+def _normalize_sources(config: dict[str, Any]) -> dict[str, Any]:
+    """Apply default values to each site in sources config.
+
+    Deep-merges _SOURCE_DEFAULTS into each site entry, filling only
+    missing keys. Existing values are never overwritten.
+
+    Args:
+        config: Raw parsed sources.yaml content.
+
+    Returns:
+        Config with defaults applied (mutates in-place and returns).
+    """
+    sources = config.get("sources", {})
+    for site in sources.values():
+        if not isinstance(site, dict):
+            continue
+        for section, defaults in _SOURCE_DEFAULTS.items():
+            if section not in site:
+                site[section] = {}
+            sec = site[section]
+            if not isinstance(sec, dict):
+                continue
+            for key, default_val in defaults.items():
+                if key not in sec:
+                    sec[key] = default_val
+    return config
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -284,6 +351,7 @@ def load_sources_config(
         return _sources_cache
 
     config = _load_yaml(path or SOURCES_YAML_PATH)
+    config = _normalize_sources(config)
 
     if validate:
         errors = validate_sources_config(config)
@@ -372,13 +440,20 @@ def get_stage_config(stage_name: str) -> dict[str, Any]:
 def get_enabled_sites() -> list[str]:
     """Get list of enabled site source_ids.
 
+    Opt-out pattern: sites without ``meta.enabled`` default to enabled.
+    Only sites with ``meta.enabled: false`` are excluded.
+
+    D-7: Default matches ``_SOURCE_DEFAULTS["meta"]["enabled"]`` (True)
+    and ``pipeline.py _resolve_target_sites()`` (default True).
+
     Returns:
-        List of source_id strings where meta.enabled is True.
+        List of source_id strings where meta.enabled is not False.
     """
     sources = load_sources_config()
+    # D-7 (13): opt-out pattern — ENABLED_DEFAULT from constants.py (SOT)
     return [
         sid for sid, cfg in sources.get("sources", {}).items()
-        if cfg.get("meta", {}).get("enabled", False)
+        if cfg.get("meta", {}).get("enabled", ENABLED_DEFAULT)
     ]
 
 

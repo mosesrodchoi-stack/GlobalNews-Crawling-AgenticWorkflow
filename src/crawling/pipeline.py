@@ -43,6 +43,7 @@ from src.config.constants import (
     DATA_RAW_DIR,
     MAX_ARTICLES_PER_SITE_PER_DAY,
     DEFAULT_RATE_LIMIT_SECONDS,
+    ENABLED_DEFAULT,
 )
 from src.crawling.contracts import RawArticle, CrawlResult, DiscoveredURL
 from src.crawling.network_guard import NetworkGuard
@@ -326,10 +327,17 @@ class CrawlingPipeline:
     ) -> dict[str, dict[str, Any]]:
         """Determine which sites to crawl based on filters.
 
+        Opt-out pattern: sites are included by default unless explicitly
+        disabled with ``meta.enabled: false``.  This matches the project
+        directive that full-site crawling is the default mode.
+
         Priority:
-        1. --sites filter: explicit site IDs
-        2. --groups filter: all enabled sites in specified groups
-        3. Default: all enabled sites
+        1. --sites filter: explicit site IDs (no enabled check)
+        2. --groups filter: non-disabled sites in specified groups
+        3. Default: all non-disabled sites
+
+        D-7: ``meta.enabled`` default mirrors ``_SOURCE_DEFAULTS`` in
+        ``config_loader.py`` (both default to ``True``).
 
         Args:
             sources_config: Loaded sources.yaml configuration.
@@ -351,15 +359,15 @@ class CrawlingPipeline:
                         site_id, sorted(all_sources.keys())[:10],
                     )
         elif self._groups_filter:
-            # Sites in specified groups
+            # Sites in specified groups — D-7 (13): ENABLED_DEFAULT from constants.py (SOT)
             for site_id, site_cfg in all_sources.items():
                 if site_cfg.get("group") in self._groups_filter:
-                    if site_cfg.get("meta", {}).get("enabled", False):
+                    if site_cfg.get("meta", {}).get("enabled", ENABLED_DEFAULT):
                         target[site_id] = site_cfg
         else:
-            # All enabled sites
+            # All non-disabled sites — D-7 (13): ENABLED_DEFAULT from constants.py (SOT)
             for site_id, site_cfg in all_sources.items():
-                if site_cfg.get("meta", {}).get("enabled", False):
+                if site_cfg.get("meta", {}).get("enabled", ENABLED_DEFAULT):
                     target[site_id] = site_cfg
 
         return target
@@ -846,8 +854,8 @@ class CrawlingPipeline:
                     results.append(CrawlResult(source_id=site_id))
                     continue
 
-                # Skip disabled sites
-                if not site_cfg.get("meta", {}).get("enabled", True):
+                # Skip disabled sites — D-7 (13): ENABLED_DEFAULT from constants.py (SOT)
+                if not site_cfg.get("meta", {}).get("enabled", ENABLED_DEFAULT):
                     logger.info("site_disabled site_id=%s", site_id)
                     results.append(CrawlResult(source_id=site_id))
                     continue

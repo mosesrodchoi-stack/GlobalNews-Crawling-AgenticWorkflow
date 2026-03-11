@@ -19,6 +19,7 @@ Quality Impact Path (절대 기준 1):
 """
 
 import ast
+import importlib.util
 import json
 import os
 import re
@@ -352,6 +353,7 @@ def _check_doc_code_sync(project_dir):
     DC-1: CLAUDE.md NEVER DO retry limits ↔ validate_retry_budget.py constants
     DC-2: D-7 Risk score constants (_context_lib.py ↔ predictive_debug_guard.py)
     DC-3: D-7 ULW detection pattern (validate_retry_budget.py ↔ _context_lib.py)
+    DC-5: D-7 ENABLED_DEFAULT sync (6 files — validate_enabled_default_sync.py)
 
     Read-only: no SOT access, no RLM data mutation, no atomic_write calls.
     Returns list of _result() dicts (extends results, not appends single).
@@ -615,6 +617,42 @@ def _check_doc_code_sync(project_dir):
         results.append(_result(
             INFO, "PASS", "Doc-code sync: DC-4",
             "D-7 Retry limit constants synchronized",
+        ))
+
+    # --- DC-5: D-7 ENABLED_DEFAULT sync (6 files) ---
+    # Uses scripts/validate_enabled_default_sync.py to cross-validate
+    # the opt-out pattern default across constants.py, config_loader.py,
+    # pipeline.py, main.py, preflight_check.py.
+    ed_script = os.path.join(project_dir, "scripts", "validate_enabled_default_sync.py")
+    dc5_ok = True
+    if os.path.isfile(ed_script):
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "validate_enabled_default_sync", ed_script
+            )
+            ed_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(ed_mod)
+            ed_result = ed_mod.run_validation(project_dir)
+
+            if not ed_result.get("valid"):
+                dc5_ok = False
+                mismatches = ed_result.get("cross_validation", {}).get("mismatches", [])
+                results.append(_result(
+                    WARNING, "WARN", "Doc-code sync: DC-5",
+                    f"D-7 ENABLED_DEFAULT out of sync — "
+                    f"{len(mismatches)} mismatch(es): "
+                    f"{', '.join(m.get('check', '?') for m in mismatches)}",
+                ))
+        except Exception as e:
+            dc5_ok = False
+            results.append(_result(
+                WARNING, "FAIL", "Doc-code sync: DC-5", f"validation error: {e}"
+            ))
+
+    if dc5_ok and os.path.isfile(ed_script):
+        results.append(_result(
+            INFO, "PASS", "Doc-code sync: DC-5",
+            "D-7 ENABLED_DEFAULT synchronized across 6 files",
         ))
 
     return results
