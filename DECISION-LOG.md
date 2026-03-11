@@ -933,6 +933,20 @@
 - **근거**: D-7 desync는 silent runtime failure를 유발한다. pytest가 CI에서 자동으로 잡아준다.
 - **대안**: 런타임 import로 중복 제거 → 기각 (독립 실행 가능성 보존, 장애 격리 원칙)
 
+### ADR-064: D-7 Instance 13 P1 봉쇄 — ENABLED_DEFAULT SOT 중앙화
+
+- **날짜**: 2026-03-11
+- **상태**: Accepted
+- **맥락**: `meta.enabled` 옵트아웃 패턴의 기본값(`True`)이 7개 파일에 독립적으로 하드코딩되어 있었음. 값 변경 시 사일런트 불일치로 사이트 필터링 오류 위험.
+- **결정**: `constants.py`에 `ENABLED_DEFAULT = True` 단일 SOT를 정의하고, consumer 파일들이 import로 자동 동기화한다.
+  - 5개 consumer(`config_loader.py`×2, `pipeline.py`×3, `crawler.py`×1, `main.py`×1)가 import로 자동 동기화
+  - 1개 standalone(`preflight_check.py`)은 하드코딩 유지 + AST 검증
+  - `scripts/validate_enabled_default_sync.py` (ED1-ED7 + ED-CROSS) AST 기반 P1 교차검증
+  - `setup_maintenance.py` DC-5 통합
+  - `tests/structural/test_d7_sync.py` H-13 (7 tests)
+- **근거**: SOT 변경 시 5개 consumer가 자동 동기화되며, preflight_check.py 드리프트를 AST 파싱으로 결정론적으로 탐지한다. 성찰에서 `crawler.py` 누락 + ED4 함수 범위 제한 발견 → 수정 완료.
+- **대안**: 7개 파일 모두 import로 통일 → 기각 (preflight_check.py는 독립 실행 가능성 보존, 장애 격리 원칙)
+
 ---
 
 ## 문서 관리

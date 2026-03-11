@@ -20,7 +20,7 @@
 
 | 항목 | 요구 사항 | 확인 방법 |
 |------|----------|----------|
-| Python | 3.10 이상 | `python3 --version` |
+| Python | 3.12 이상, 3.14 미만 | `python3 --version` |
 | 디스크 공간 | 20GB+ 여유 | 크롤링 데이터 + NLP 모델 저장 |
 | RAM | 16GB 이상 (권장 48GB) | `sysctl hw.memsize` |
 | 네트워크 | 인터넷 연결 필수 | 121개 해외 뉴스 사이트 접근 |
@@ -61,7 +61,7 @@ python3 scripts/preflight_check.py --project-dir . --mode full --json
 
 점검 항목:
 - Python 버전 호환성
-- 핵심 의존성 설치 상태 (44+ 패키지)
+- 핵심 의존성 설치 상태 (49+ 패키지)
 - 설정 파일 유효성 (`sources.yaml`, `pipeline.yaml`)
 - 디스크 공간 충분 여부
 - 데이터 디렉터리 구조
@@ -636,7 +636,7 @@ new_site:
     language: en
     region: us
     daily_article_estimate: 50
-    enabled: true
+    enabled: true                   # 기본값: constants.py ENABLED_DEFAULT (SOT). validate_enabled_default_sync.py로 동기화 검증
   crawl:
     primary_method: rss            # rss | sitemap | html_listing
     rss_url: "https://new-site.com/rss"
@@ -708,6 +708,7 @@ python3 main.py --mode crawl --sites new_site --log-level DEBUG
 | `SM5b: pACS log missing` | advance-step 시 pacs-logs 없음 | L1.5 pACS 채점을 수행하고 `pacs-logs/step-N-pacs.md` 생성 후 재시도 |
 | `SM5c: pACS score is N (RED zone)` | pACS < 50 상태에서 advance 시도 | 약점 차원 개선 후 재채점. 긴급 시 `--force` 사용 (감사 기록 생성) |
 | `SM5d: Review verdict is FAIL` | 리뷰 FAIL 상태에서 advance 시도 | 리뷰 이슈 해결 후 재리뷰. 또는 `--force` 사용 |
+| `ENABLED_DEFAULT out of sync` | D-7 Instance 13 비동기화 (7개 파일) | `python3 scripts/validate_enabled_default_sync.py --project-dir .` 실행 후 지적된 파일 동기화 |
 
 ### 9.3 Tier 6 수동 개입
 
