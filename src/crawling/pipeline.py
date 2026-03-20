@@ -993,6 +993,48 @@ class CrawlingPipeline:
         except KeyError:
             return None
 
+    def _create_rss_fallback_article(
+        self,
+        url_obj: DiscoveredURL,
+        site_id: str,
+        site_cfg: dict[str, Any],
+    ) -> RawArticle | None:
+        """Create a title-only article from RSS metadata when page is blocked.
+
+        For hard-paywall sites with title_only=true, the RSS feed already
+        provides title, URL, and published_at. When the article page returns
+        403, we save what we have rather than losing the article entirely.
+        """
+        if not url_obj.title_hint:
+            return None
+        source_name = site_cfg.get("name", site_id)
+        language = site_cfg.get("language", "en")
+        published_at = url_obj.published_at
+        if published_at is not None:
+            if published_at.tzinfo is None:
+                published_at = published_at.replace(tzinfo=timezone.utc)
+            if published_at < self._lookback_cutoff:
+                return None
+
+        import hashlib
+        title = url_obj.title_hint.strip()
+        content_hash = hashlib.sha256(title.encode("utf-8")).hexdigest()
+
+        return RawArticle(
+            url=url_obj.url,
+            title=title,
+            body="",
+            source_id=site_id,
+            source_name=source_name,
+            language=language,
+            published_at=published_at,
+            crawled_at=datetime.now(timezone.utc),
+            crawl_tier=1,
+            crawl_method="rss",
+            is_paywall_truncated=True,
+            content_hash=content_hash,
+        )
+
     # -----------------------------------------------------------------------
     # Single Pass (all sites, with Level 2+3 retry per site)
     # -----------------------------------------------------------------------
@@ -2081,6 +2123,27 @@ class CrawlingPipeline:
                 )
 
             except NetworkError as e:
+                # For title_only sites with RSS metadata, save title-only article
+                if (site_cfg.get("extraction", {}).get("title_only", False)
+                        and url_obj.title_hint
+                        and url_obj.discovered_via in ("rss", "google_news")):
+                    article = self._create_rss_fallback_article(
+                        url_obj, site_id, site_cfg)
+                    if article is not None:
+                        article_id = str(uuid.uuid4())
+                        dedup_result = self._dedup.is_duplicate(
+                            url=article.url, title=article.title,
+                            body=article.body, source_id=site_id,
+                            article_id=article_id)
+                        if not dedup_result.is_duplicate:
+                            writer.write_article(article)
+                            result.extracted_count += 1
+                            logger.info(
+                                "rss_fallback_saved url=%s site_id=%s title=%s",
+                                url_obj.url[:80], site_id,
+                                (article.title or "")[:60])
+                            self._circuit_breakers.record_success(site_id)
+                            continue
                 result.failed_count += 1
                 result.errors.append(f"Network: {url_obj.url}: {e}")
                 self._retry_manager.handle_url_failure(
@@ -2094,6 +2157,28 @@ class CrawlingPipeline:
                 )
 
             except BlockDetectedError as e:
+                # For title_only sites with RSS metadata, save title-only article
+                # even when the article page is blocked (403/WAF).
+                if (site_cfg.get("extraction", {}).get("title_only", False)
+                        and url_obj.title_hint
+                        and url_obj.discovered_via in ("rss", "google_news")):
+                    article = self._create_rss_fallback_article(
+                        url_obj, site_id, site_cfg)
+                    if article is not None:
+                        article_id = str(uuid.uuid4())
+                        dedup_result = self._dedup.is_duplicate(
+                            url=article.url, title=article.title,
+                            body=article.body, source_id=site_id,
+                            article_id=article_id)
+                        if not dedup_result.is_duplicate:
+                            writer.write_article(article)
+                            result.extracted_count += 1
+                            logger.info(
+                                "rss_fallback_saved url=%s site_id=%s title=%s",
+                                url_obj.url[:80], site_id,
+                                (article.title or "")[:60])
+                            self._circuit_breakers.record_success(site_id)
+                            continue
                 result.failed_count += 1
                 result.tier_used = max(result.tier_used, 2)
                 result.errors.append(f"Blocked: {url_obj.url}: {e}")

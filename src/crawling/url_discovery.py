@@ -1618,11 +1618,33 @@ class URLDiscovery:
                 return []
             if not rss_url.startswith(("http://", "https://")):
                 rss_url = urljoin(base_url, rss_url)
+            all_results: list[DiscoveredURL] = []
+            seen_urls: set[str] = set()
+            # Primary RSS feed
             try:
-                return self._rss_parser.parse_feed(rss_url, source_id, max_age_days)
+                primary = self._rss_parser.parse_feed(rss_url, source_id, max_age_days)
+                for u in primary:
+                    if u.url not in seen_urls:
+                        seen_urls.add(u.url)
+                        all_results.append(u)
             except Exception as e:
                 logger.warning("rss_discovery_failed source_id=%s error=%s error_type=%s", source_id, str(e), type(e).__name__)
-                return []
+            # Additional RSS feeds (rss_urls: list of section-specific feeds)
+            for extra_url in crawl_config.get("rss_urls", []):
+                if not extra_url.startswith(("http://", "https://")):
+                    extra_url = urljoin(base_url, extra_url)
+                try:
+                    extras = self._rss_parser.parse_feed(extra_url, source_id, max_age_days)
+                    for u in extras:
+                        if u.url not in seen_urls:
+                            seen_urls.add(u.url)
+                            all_results.append(u)
+                    logger.info("rss_extra_feed source_id=%s url=%s new_urls=%s",
+                                source_id, extra_url, len([u for u in extras if u.url in seen_urls]))
+                except Exception as e:
+                    logger.warning("rss_extra_feed_failed source_id=%s url=%s error=%s",
+                                   source_id, extra_url, str(e))
+            return all_results
 
         elif method == "sitemap":
             # C-6 fix: support both sitemap_url (singular) and sitemap_urls (plural).

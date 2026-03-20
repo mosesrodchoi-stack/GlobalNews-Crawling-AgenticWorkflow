@@ -578,10 +578,18 @@ sources:
     language: en
     group: E
     crawl:
-      primary_method: sitemap
+      primary_method: rss
       fallback_methods:
+      - sitemap
       - dom
-      rss_url: null
+      rss_url: https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml
+      rss_urls:
+      - https://rss.nytimes.com/services/xml/rss/nyt/World.xml
+      - https://rss.nytimes.com/services/xml/rss/nyt/US.xml
+      - https://rss.nytimes.com/services/xml/rss/nyt/Business.xml
+      - https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml
+      - https://rss.nytimes.com/services/xml/rss/nyt/Science.xml
+      - https://rss.nytimes.com/services/xml/rss/nyt/Health.xml
       sitemap_url: /sitemap.xml
       rate_limit_seconds: 10
       crawl_delay_mandatory: null
@@ -653,9 +661,10 @@ sources:
       crawl_delay_mandatory: null
       max_requests_per_hour: 240
       jitter_seconds: 3
+      bypass_discovery_preferred: true
     anti_block:
       ua_tier: 3
-      default_escalation_tier: 3
+      default_escalation_tier: 1
       max_escalation_tier: 6
       requires_proxy: false
       proxy_region: null
@@ -803,13 +812,8 @@ sources:
       rss_url: null
       sitemap_urls:
       - https://www.bloomberg.com/feeds/sitemap_news.xml
-      - https://www.bloomberg.com/feeds/sitemap_collection.xml
-      - https://www.bloomberg.com/feeds/sitemap_video.xml
-      - https://www.bloomberg.com/feeds/sitemap_audio.xml
-      - https://www.bloomberg.com/feeds/sitemap_people.xml
       - https://www.bloomberg.com/feeds/sitemap_companies.xml
       - https://www.bloomberg.com/feeds/sitemap_securities.xml
-      - https://www.bloomberg.com/feeds/sitemap_billionaires.xml
       sitemap_url: /feeds/sitemap_news.xml
       rate_limit_seconds: 10
       crawl_delay_mandatory: null
@@ -817,7 +821,7 @@ sources:
       jitter_seconds: 3
     anti_block:
       ua_tier: 3
-      default_escalation_tier: 3
+      default_escalation_tier: 1
       max_escalation_tier: 6
       requires_proxy: false
       proxy_region: null
@@ -825,7 +829,7 @@ sources:
     extraction:
       paywall_type: hard
       title_only: true
-      rendering_required: false
+      rendering_required: true
       charset: utf-8
     meta:
       difficulty_tier: Extreme
