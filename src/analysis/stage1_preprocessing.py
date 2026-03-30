@@ -813,6 +813,32 @@ def _parse_timestamp(value: Any) -> datetime | None:
     return None
 
 
+def _extract_category(value: Any) -> str:
+    """Extract a plain string category from a raw JSONL value.
+
+    Some sites (e.g., EU sources) emit structured category objects like
+    ``{"@type": "DefinedTerm", "name": "EU and the World", ...}``
+    instead of a plain string.  This function normalises those to a string.
+    """
+    if not value:
+        return "uncategorized"
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return value.get("name") or value.get("termCode") or "uncategorized"
+    if isinstance(value, list):
+        # Take the first element's name if it's a list of dicts
+        for item in value:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("termCode")
+                if name:
+                    return name
+            elif isinstance(item, str):
+                return item
+        return "uncategorized"
+    return str(value)
+
+
 # =============================================================================
 # Stage1Preprocessor
 # =============================================================================
@@ -1027,7 +1053,7 @@ class Stage1Preprocessor:
             "title": title_normalized,
             "body": body_normalized,
             "source": source_name or source_id,
-            "category": raw.get("category") or "uncategorized",
+            "category": _extract_category(raw.get("category")),
             "language": language,
             "published_at": published_at,
             "crawled_at": crawled_at,
@@ -1225,6 +1251,43 @@ class Stage1Preprocessor:
             columns["author"].append(row["author"])
             columns["word_count"].append(row["word_count"])
             columns["content_hash"].append(row["content_hash"])
+
+        # P1 Safety Net: sanitize all utf8 columns before pa.array().
+        # Prevents ArrowTypeError from dict/list values that slip through
+        # adapter or preprocessing layers.  _extract_category() handles
+        # category-specific semantics upstream; this guard catches the rest.
+        for f in ARTICLES_SCHEMA:
+            if f.type == pa.utf8():
+                sanitized: list[str | None] = []
+                for v in columns[f.name]:
+                    if v is None or isinstance(v, str):
+                        sanitized.append(v)
+                    elif isinstance(v, dict):
+                        extracted = (
+                            v.get("name") or v.get("text")
+                            or v.get("href") or v.get("url") or ""
+                        )
+                        logger.warning(
+                            "p1_dict_sanitized field=%s extracted=%s",
+                            f.name, str(extracted)[:80],
+                        )
+                        sanitized.append(str(extracted))
+                    elif isinstance(v, list):
+                        first = ""
+                        for item in v:
+                            if isinstance(item, str):
+                                first = item
+                                break
+                            if isinstance(item, dict):
+                                first = item.get("name", "")
+                                break
+                        logger.warning(
+                            "p1_list_sanitized field=%s len=%d", f.name, len(v),
+                        )
+                        sanitized.append(first)
+                    else:
+                        sanitized.append(str(v))
+                columns[f.name] = sanitized
 
         # Build typed arrays
         arrays = []

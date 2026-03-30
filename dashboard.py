@@ -149,21 +149,43 @@ def format_number(n: int | float) -> str:
     return f"{n:,}"
 
 
-# Source -> Group mapping
-SOURCE_GROUPS = {
-    "yna": "A", "chosun": "A", "joongang": "A", "donga": "A", "hani": "A",
-    "mt": "B", "hankyung": "B",
-    "nocutnews": "C", "kmib": "C", "ohmynews": "C",
-    "bloter": "D", "etnews": "D", "irobotnews": "D", "38north": "D",
-    "sciencetimes": "D", "techneedle": "D",
-    "nytimes": "E", "ft": "E", "cnn": "E", "huffpost": "E",
-    "wsj": "E", "bloomberg": "E", "buzzfeed": "E", "nationalpost": "E",
-    "marketwatch": "E",
-    "scmp": "F", "people": "F", "thehindu": "F", "globaltimes": "F",
-    "yomiuri": "F", "taiwannews": "F",
-    "thesun": "G", "lemonde": "G", "themoscowtimes": "G",
-    "israelhayom": "G", "bild": "G", "arabnews": "G",
-}
+# Source -> Group mapping: derived from SOT (data/config/sources.yaml)
+_VALID_GROUPS = frozenset("ABCDEFGHIJ")
+
+
+def _load_source_groups() -> dict[str, str]:
+    """Load site->group mapping from sources.yaml (SOT).
+
+    P1: validates group values and minimum site count to detect parse failures.
+    """
+    import yaml
+
+    sources_path = DATA_DIR / "config" / "sources.yaml"
+    if not sources_path.exists():
+        return {}
+
+    with open(sources_path, encoding="utf-8") as f:
+        config = yaml.safe_load(f) or {}
+
+    groups: dict[str, str] = {}
+    for site_id, site_cfg in config.get("sources", {}).items():
+        if isinstance(site_cfg, dict):
+            g = site_cfg.get("group", "?")
+            if g not in _VALID_GROUPS:
+                g = "?"
+            groups[site_id] = g
+
+    # P1: parse failure detection — 116 sites expected, 50 is safe minimum
+    if 0 < len(groups) < 50:
+        import logging
+        logging.getLogger(__name__).error(
+            "source_groups_parse_suspect loaded=%d expected=100+", len(groups),
+        )
+
+    return groups
+
+
+SOURCE_GROUPS = _load_source_groups()
 
 GROUP_NAMES = {
     "A": "Korean Major",
@@ -173,11 +195,16 @@ GROUP_NAMES = {
     "E": "English Major",
     "F": "Asia-Pacific",
     "G": "Europe/ME",
+    "H": "Africa",
+    "I": "Latin America",
+    "J": "Russia/Central Asia",
 }
 
 LANG_NAMES = {
     "ko": "Korean", "en": "English", "fr": "French", "de": "German",
-    "zh": "Chinese", "ja": "Japanese", "ar": "Arabic", "ru": "Russian",
+    "ja": "Japanese", "ru": "Russian", "es": "Spanish", "it": "Italian",
+    "pt": "Portuguese", "no": "Norwegian", "cs": "Czech", "sv": "Swedish",
+    "pl": "Polish", "mn": "Mongolian",
 }
 
 # ---------------------------------------------------------------------------
